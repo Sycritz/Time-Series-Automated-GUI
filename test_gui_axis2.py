@@ -96,7 +96,7 @@ def test_gui_spectral_workflow():
     # Switch back to frequency scale
     tab3.freq_period_toggle.setCurrentText("Frequency Scale")
     ax = tab3.plot_widget.canvas.axes
-    assert ax.get_xlabel() == "Frequency (radians/sample)"
+    assert ax.get_xlabel() == "Frequency (cycles/sample)"
     
     # 4. Test parametric spectrum overlay when a model is fitted
     window.state.fitted_model = object()  # Dummy fitted model

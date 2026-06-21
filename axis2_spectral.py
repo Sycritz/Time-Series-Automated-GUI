@@ -22,10 +22,10 @@ def compute_periodogram(series: pd.Series, taper: str | None, taper_pct: float) 
         w = np.ones(n)
         p = int(taper_pct * n)
         if p > 0:
-            for t in range(p):
-                val = 0.5 * (1.0 - np.cos(np.pi * t / p))
-                w[t] = val
-                w[n - 1 - t] = val
+            for idx in range(p):
+                val = 0.5 * (1.0 - np.cos(np.pi * (idx + 1) / p))
+                w[idx] = val
+                w[n - 1 - idx] = val
         x = x * w
     elif taper == 'Hann':
         if n > 1:
@@ -141,9 +141,10 @@ def compute_parametric_spectrum(ar_coeffs: list, ma_coeffs: list, sigma2: float,
     
     return frequencies, theoretical_spectrum
 
-def detect_cycles(frequencies: np.ndarray, f_hat: np.ndarray, ci_upper: np.ndarray) -> list[dict]:
+def detect_cycles(frequencies: np.ndarray, f_hat: np.ndarray, ci_upper: np.ndarray, nu: float | None = None) -> list[dict]:
     """
     Identify statistically significant cycles from the smoothed spectrum.
+    Accounts for the spectral slope by fitting a log-quadratic baseline.
     """
     if len(f_hat) < 3:
         return []
@@ -154,46 +155,55 @@ def detect_cycles(frequencies: np.ndarray, f_hat: np.ndarray, ci_upper: np.ndarr
         if f_hat[i] > f_hat[i-1] and f_hat[i] > f_hat[i+1]:
             peaks_indices.append(i)
             
-    # Background white noise level
-    f_WN = np.mean(f_hat)
-    
-    # Solve for equivalent degrees of freedom nu
-    ratios = ci_upper / f_hat
-    valid = np.isfinite(ratios) & (f_hat > 0)
-    if not np.any(valid):
-        ratio = 39.4978  # Default corresponding to nu = 2.0
-    else:
-        ratio = np.mean(ratios[valid])
-    ratio = max(ratio, 1.0001)
-    
-    # Solve nu / chi2.ppf(0.025, df=nu) = ratio
-    def obj(nu_val):
-        denom = scipy.stats.chi2.ppf(0.025, df=nu_val)
-        if denom <= 0:
-            return -ratio
-        return nu_val / denom - ratio
+    # Solve for equivalent degrees of freedom nu if not provided
+    if nu is None:
+        ratios = ci_upper / f_hat
+        valid = np.isfinite(ratios) & (f_hat > 0)
+        if not np.any(valid):
+            ratio = 39.4978  # Default corresponding to nu = 2.0
+        else:
+            ratio = np.mean(ratios[valid])
+        ratio = max(ratio, 1.0001)
         
+        # Solve nu / chi2.ppf(0.025, df=nu) = ratio
+        def obj(nu_val):
+            denom = scipy.stats.chi2.ppf(0.025, df=nu_val)
+            if denom <= 0:
+                return -ratio
+            return nu_val / denom - ratio
+            
+        try:
+            a = 1e-5
+            b = 1e7
+            if obj(a) < 0:
+                while obj(a) < 0 and a > 1e-15:
+                    a /= 10.0
+            if obj(b) > 0:
+                while obj(b) > 0 and b < 1e15:
+                    b *= 10.0
+            nu = scipy.optimize.brentq(obj, a, b)
+        except Exception:
+            nu = 2.0
+            
+    # Account for spectral slope by fitting a baseline:
+    # Fit a log-quadratic baseline (a quadratic polynomial to log(f_hat) vs frequencies)
+    # This captures the smooth, frequency-dependent background (slope + curvature)
     try:
-        a = 1e-5
-        b = 1e7
-        if obj(a) < 0:
-            while obj(a) < 0 and a > 1e-15:
-                a /= 10.0
-        if obj(b) > 0:
-            while obj(b) > 0 and b < 1e15:
-                b *= 10.0
-        nu = scipy.optimize.brentq(obj, a, b)
+        log_f = np.log(np.clip(f_hat, 1e-15, None))
+        poly = np.polyfit(frequencies, log_f, deg=2)
+        baseline = np.exp(np.polyval(poly, frequencies))
     except Exception:
-        nu = 2.0
+        # Fallback to white noise level if fitting fails
+        baseline = np.full_like(frequencies, np.mean(f_hat))
         
-    # Statistical significance threshold
-    threshold = f_WN * scipy.stats.chi2.ppf(0.95, df=nu) / nu
+    # Statistical significance threshold at each frequency
+    thresholds = baseline * scipy.stats.chi2.ppf(0.95, df=nu) / nu
     
     results = []
     for idx in peaks_indices:
         freq = frequencies[idx]
         val = f_hat[idx]
-        sig = bool(val > threshold)
+        sig = bool(val > thresholds[idx])
         period = 2.0 * np.pi / freq if freq > 0 else float('inf')
         results.append({
             "frequency": float(freq),

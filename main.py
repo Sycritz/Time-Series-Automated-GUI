@@ -747,10 +747,29 @@ class SpectralTab(BaseTab):
         self.plot_widget = PlotWidget(self)
         self.right_layout.addWidget(self.plot_widget)
         
-        # QTextBrowser for cycle detection results (added to right layout below the plot)
-        self.results_browser = QTextBrowser(self.control_panel)
+        # Layout for cycle results and its export button (added to right layout below the plot)
+        results_container = QWidget(self)
+        results_layout = QVBoxLayout(results_container)
+        results_layout.setContentsMargins(0, 0, 0, 0)
+        results_layout.setSpacing(4)
+        
+        results_header = QHBoxLayout()
+        results_label = QLabel("Cycle Detection Results", self)
+        results_label.setStyleSheet("font-weight: bold; color: #1F2937;")
+        self.export_cycles_btn = QPushButton("Export Cycles CSV", self)
+        self.export_cycles_btn.setEnabled(False)
+        self.export_cycles_btn.clicked.connect(self.export_cycles_csv)
+        
+        results_header.addWidget(results_label)
+        results_header.addStretch()
+        results_header.addWidget(self.export_cycles_btn)
+        results_layout.addLayout(results_header)
+        
+        self.results_browser = QTextBrowser(self)
         self.results_browser.setMaximumHeight(150)
-        self.right_layout.addWidget(self.results_browser)
+        results_layout.addWidget(self.results_browser)
+        
+        self.right_layout.addWidget(results_container)
         
         # Left Panel (Controls)
         self.control_layout.addWidget(QLabel("Data Taper:", self.control_panel))
@@ -843,6 +862,26 @@ class SpectralTab(BaseTab):
             self.ci_lower = ci_lower
             self.ci_upper = ci_upper
             
+            # Compute equivalent degrees of freedom nu for detect_cycles
+            n = len(clean_series)
+            w_vals = np.zeros(M + 1)
+            for h in range(1, M + 1):
+                val = h / M
+                if window == 'Daniell':
+                    w_vals[h] = 1.0
+                elif window == 'Bartlett':
+                    w_vals[h] = 1.0 - abs(val)
+                elif window == 'Parzen':
+                    abs_val = abs(val)
+                    if abs_val <= 0.5:
+                        w_vals[h] = 1.0 - 6.0 * abs_val**2 + 6.0 * abs_val**3
+                    else:
+                        w_vals[h] = 2.0 * (1.0 - abs_val)**3
+                elif window == 'Hann':
+                    w_vals[h] = 0.5 * (1.0 + np.cos(np.pi * val))
+            sum_w2 = np.sum(w_vals[1:]**2)
+            self.nu = (2.0 * n) / (1.0 + 2.0 * sum_w2)
+            
             self.plot_spectrum()
         except Exception as e:
             QMessageBox.critical(self, "Estimation Error", str(e))
@@ -854,23 +893,44 @@ class SpectralTab(BaseTab):
             
         try:
             from axis2_spectral import detect_cycles
-            cycles = detect_cycles(self.smooth_freqs, self.smooth_val, self.ci_upper)
+            nu_val = getattr(self, "nu", None)
+            cycles = detect_cycles(self.smooth_freqs, self.smooth_val, self.ci_upper, nu_val)
             self.main_window.state.detected_cycles = cycles
+            self.export_cycles_btn.setEnabled(bool(cycles))
             
             if not cycles:
                 html = "<p>No significant cycles detected.</p>"
             else:
                 html = "<h3>Detected Cycles</h3><table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%; border: 1px solid #D1D5DB;'>"
-                html += "<tr style='background-color: #F3F4F6;'><th>Frequency (rad/sample)</th><th>Period (samples)</th><th>Significant</th></tr>"
+                html += "<tr style='background-color: #F3F4F6;'><th>Frequency (cycles/sample)</th><th>Period (samples)</th><th>Significant</th></tr>"
                 for c in cycles:
                     sig_str = "<font color='#16A34A'><b>Yes</b></font>" if c["significant"] else "No"
-                    html += f"<tr><td>{c['frequency']:.4f}</td><td>{c['period']:.2f}</td><td>{sig_str}</td></tr>"
+                    freq_cycles = c["frequency"] / (2.0 * np.pi)
+                    html += f"<tr><td>{freq_cycles:.4f}</td><td>{c['period']:.2f}</td><td>{sig_str}</td></tr>"
                 html += "</table>"
                 
             self.results_browser.setHtml(html)
             self.main_window.update_ui_from_state()
         except Exception as e:
             QMessageBox.critical(self, "Cycle Detection Error", str(e))
+
+    def export_cycles_csv(self):
+        cycles = self.main_window.state.detected_cycles
+        if not cycles:
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Detected Cycles to CSV", "", "CSV Files (*.csv)"
+        )
+        if file_path:
+            if not file_path.lower().endswith(".csv"):
+                file_path += ".csv"
+            try:
+                df_cycles = pd.DataFrame(cycles)
+                # Include frequency in both units for completeness
+                df_cycles["frequency_cycles_per_sample"] = df_cycles["frequency"] / (2.0 * np.pi)
+                df_cycles.to_csv(file_path, index=False)
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export cycles: {str(e)}")
             
     def plot_spectrum(self):
         if self.raw_freqs is None:
@@ -902,16 +962,23 @@ class SpectralTab(BaseTab):
             
             xlabel = "Period (samples)"
             title = "Spectral Density Estimators (Period Scale)"
+            
+            # Limit the x-axis for period scale to avoid stretching to infinity
+            series = self.main_window.state.stationary_series
+            max_period = 100.0
+            if series is not None:
+                max_period = min(100.0, len(series))
+            ax.set_xlim(2.0, max_period)
         else:
-            x_raw = self.raw_freqs
+            x_raw = self.raw_freqs / (2.0 * np.pi)
             y_raw = self.raw_pgram
             
-            x_smooth = self.smooth_freqs
+            x_smooth = self.smooth_freqs / (2.0 * np.pi)
             y_smooth = self.smooth_val
             y_ci_lower = self.ci_lower
             y_ci_upper = self.ci_upper
             
-            xlabel = "Frequency (radians/sample)"
+            xlabel = "Frequency (cycles/sample)"
             title = "Spectral Density Estimators (Frequency Scale)"
             
         # Plot raw periodogram
@@ -956,7 +1023,7 @@ class SpectralTab(BaseTab):
             x_vals = 2.0 * np.pi / param_freqs[valid]
             y_vals = param_spec[valid]
         else:
-            x_vals = param_freqs
+            x_vals = param_freqs / (2.0 * np.pi)
             y_vals = param_spec
             
         ax.plot(x_vals, y_vals, color='#D97706', linewidth=2.5, linestyle='--', label='Parametric ARMA Spectrum')
