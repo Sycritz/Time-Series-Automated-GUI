@@ -6,9 +6,9 @@ import numpy as np
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QFrame, QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QTextBrowser,
-    QProgressBar, QTabBar
+    QProgressBar, QTabBar, QTableView, QMessageBox, QFileDialog
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
 from state import AnalysisState
 from widgets import StatusIndicator, PlotWidget
 
@@ -198,15 +198,52 @@ class BaseTab(QWidget):
         self.layout.addWidget(self.right_container, 7)
 
 
+class PandasModel(QAbstractTableModel):
+    def __init__(self, df: pd.DataFrame):
+        super().__init__()
+        self._df = df
+
+    def rowCount(self, parent=QModelIndex()):
+        return min(len(self._df), 10)
+
+    def columnCount(self, parent=QModelIndex()):
+        return self._df.shape[1]
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
+            val = self._df.iloc[index.row(), index.column()]
+            if isinstance(val, float):
+                return f"{val:.4f}"
+            return str(val)
+        return None
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.DisplayRole:
+            if orientation == Qt.Orientation.Horizontal:
+                return str(self._df.columns[section])
+            elif orientation == Qt.Orientation.Vertical:
+                return str(self._df.index[section])
+        return None
+
+
 class DataLoadTab(BaseTab):
     def __init__(self, main_window, parent=None):
         super().__init__("Data Load & Explore", parent)
         self.main_window = main_window
+        self.df = None
+        self.raw_series = None
+        
+        # Repopulate right layout: table preview at top, plot below
+        self.preview_table = QTableView(self)
+        self.preview_table.setFixedHeight(180)
+        self.right_layout.addWidget(self.preview_table)
         
         self.plot_widget = PlotWidget(self)
         self.right_layout.addWidget(self.plot_widget)
         
-        # Add placeholders for Data Load Controls
+        # Control panel controls
         self.control_layout.addWidget(QLabel("Select Time Series CSV:", self.control_panel))
         self.load_btn = QPushButton("Browse CSV File", self.control_panel)
         self.control_layout.addWidget(self.load_btn)
@@ -226,6 +263,16 @@ class DataLoadTab(BaseTab):
         self.impute_combo.addItems(["Forward Fill", "Linear Interpolation", "Mean Imputation"])
         self.control_layout.addWidget(self.impute_combo)
         
+        self.apply_impute_btn = QPushButton("Apply Imputation", self.control_panel)
+        self.control_layout.addWidget(self.apply_impute_btn)
+        
+        # Warning label for high imputation rates
+        self.warning_label = QLabel("", self.control_panel)
+        self.warning_label.setStyleSheet("color: #DC2626; font-weight: bold;")
+        self.warning_label.setWordWrap(True)
+        self.warning_label.hide()
+        self.control_layout.addWidget(self.warning_label)
+        
         self.control_layout.addWidget(QLabel("Rolling Window size:", self.control_panel))
         self.roll_spin = QSpinBox(self.control_panel)
         self.roll_spin.setRange(2, 365)
@@ -235,19 +282,176 @@ class DataLoadTab(BaseTab):
         self.adf_btn = QPushButton("Run ADF Test", self.control_panel)
         self.control_layout.addWidget(self.adf_btn)
         
+        self.control_layout.addWidget(QLabel("ADF Test Results:", self.control_panel))
+        self.adf_results_browser = QTextBrowser(self.control_panel)
+        self.adf_results_browser.setFontFamily("Courier New")
+        self.adf_results_browser.setMinimumHeight(150)
+        self.control_layout.addWidget(self.adf_results_browser)
+        
         self.control_layout.addStretch()
         
-        # Temporary simulation button for Task 0
-        self.sim_btn = QPushButton("[Simulate Data Load]", self.control_panel)
-        self.sim_btn.setObjectName("primaryButton")
-        self.sim_btn.clicked.connect(self.simulate_load)
-        self.control_layout.addWidget(self.sim_btn)
+        # Connect signals
+        self.load_btn.clicked.connect(self.browse_file)
+        self.time_col_combo.currentIndexChanged.connect(self.on_columns_selected)
+        self.val_col_combo.currentIndexChanged.connect(self.on_columns_selected)
+        self.apply_impute_btn.clicked.connect(self.impute_data)
+        self.roll_spin.valueChanged.connect(self.plot_data)
+        self.adf_btn.clicked.connect(self.run_adf)
         
-    def simulate_load(self):
-        # Simulate loading data
-        self.main_window.state.original_series = pd.Series(np.random.randn(100))
-        self.main_window.state.time_index = pd.Index(range(100))
-        self.main_window.update_ui_from_state()
+    def browse_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open Time Series File", "", "CSV Files (*.csv);;TXT Files (*.txt);;All Files (*)"
+        )
+        if file_path:
+            try:
+                from axis1_preprocessing import load_csv
+                self.df = load_csv(file_path)
+                
+                # Update dropdown columns
+                self.time_col_combo.blockSignals(True)
+                self.val_col_combo.blockSignals(True)
+                
+                self.time_col_combo.clear()
+                self.time_col_combo.addItem("Select Column...")
+                self.time_col_combo.addItems(list(self.df.columns))
+                
+                self.val_col_combo.clear()
+                self.val_col_combo.addItem("Select Column...")
+                self.val_col_combo.addItems(list(self.df.columns))
+                
+                self.time_col_combo.blockSignals(False)
+                self.val_col_combo.blockSignals(False)
+                
+                # Set table model preview
+                model = PandasModel(self.df)
+                self.preview_table.setModel(model)
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error Loading File", str(e))
+                
+    def on_columns_selected(self):
+        time_col = self.time_col_combo.currentText()
+        val_col = self.val_col_combo.currentText()
+        
+        if time_col == "Select Column..." or val_col == "Select Column...":
+            return
+            
+        if time_col == val_col:
+            QMessageBox.critical(self, "Invalid Selection", "Time Column and Value Column must be different.")
+            return
+            
+        try:
+            # Parse time index
+            try:
+                time_idx = pd.to_datetime(self.df[time_col])
+            except Exception:
+                time_idx = pd.Index(range(len(self.df)))
+                
+            # Values Series
+            raw_series = pd.to_numeric(self.df[val_col], errors='coerce')
+            raw_series.index = time_idx
+            raw_series.name = val_col
+            self.raw_series = raw_series
+            
+            # Impute and plot automatically
+            self.impute_data()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error Extracting Series", str(e))
+            
+    def impute_data(self):
+        if self.raw_series is None:
+            QMessageBox.warning(self, "No Data Selected", "Please select Time and Value columns first.")
+            return
+            
+        try:
+            from axis1_preprocessing import handle_missing
+            method = self.impute_combo.currentText()
+            imputed_series, pct_missing = handle_missing(self.raw_series, method)
+            
+            # Update state
+            self.main_window.state.original_series = imputed_series
+            self.main_window.state.time_index = imputed_series.index
+            
+            # Show red warning label if >5% missing/imputed
+            if pct_missing > 5.0:
+                self.warning_label.setText(f"Warning: {pct_missing:.1f}% missing values imputed via {method}.")
+                self.warning_label.show()
+            else:
+                self.warning_label.hide()
+                
+            self.plot_data()
+            self.main_window.update_ui_from_state()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Imputation Error", str(e))
+            
+    def plot_data(self):
+        series = self.main_window.state.original_series
+        if series is None:
+            return
+            
+        window_size = self.roll_spin.value()
+        if window_size >= len(series):
+            window_size = max(2, len(series) - 1)
+            
+        # Draw plot
+        fig = self.plot_widget.canvas.figure
+        fig.clear()
+        
+        ax1 = fig.add_subplot(111)
+        ax1.tick_params(colors='#1F2937')
+        ax1.xaxis.label.set_color('#1F2937')
+        ax1.yaxis.label.set_color('#1F2937')
+        ax1.title.set_color('#1F2937')
+        
+        # Plot series
+        ax1.plot(series.index, series.values, color='#1F2937', label='Series Values', alpha=0.8)
+        ax1.set_ylabel('Values')
+        ax1.set_xlabel(series.index.name if series.index.name else 'Time')
+        
+        # Rolling Mean
+        rolling_mean = series.rolling(window=window_size, min_periods=1).mean()
+        ax1.plot(series.index, rolling_mean, color='#2563EB', label=f'Rolling Mean ({window_size})')
+        
+        # Rolling Std
+        rolling_std = series.rolling(window=window_size, min_periods=1).std()
+        ax2 = ax1.twinx()
+        ax2.plot(series.index, rolling_std, color='#16A34A', label=f'Rolling Std ({window_size})', linestyle='--')
+        ax2.tick_params(colors='#16A34A')
+        ax2.yaxis.label.set_color('#16A34A')
+        ax2.set_ylabel('Rolling Standard Deviation')
+        
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+        
+        fig.tight_layout()
+        self.plot_widget.canvas.draw()
+        
+    def run_adf(self):
+        series = self.main_window.state.original_series
+        if series is None:
+            QMessageBox.warning(self, "No Data Selected", "Please select Time and Value columns first.")
+            return
+            
+        try:
+            from axis1_preprocessing import run_adf_test
+            res = run_adf_test(series)
+            
+            crit_str = "\n".join([f"  {k}: {v:.4f}" for k, v in res['critical_values'].items()])
+            out = (
+                f"Augmented Dickey-Fuller (ADF) Test:\n"
+                f"-----------------------------------\n"
+                f"ADF Statistic: {res['adf_stat']:.4f}\n"
+                f"p-value:       {res['p_value']:.6f}\n"
+                f"Verdict:       {res['verdict']}\n\n"
+                f"Critical Values:\n"
+                f"{crit_str}\n"
+            )
+            self.adf_results_browser.setText(out)
+        except Exception as e:
+            QMessageBox.critical(self, "ADF Test Error", str(e))
 
 
 class TransformTab(BaseTab):
@@ -255,10 +459,14 @@ class TransformTab(BaseTab):
         super().__init__("Transform to Stationarity", parent)
         self.main_window = main_window
         
+        # Re-populate right layout: transformed series plot and frequency response plot
         self.plot_widget = PlotWidget(self)
         self.right_layout.addWidget(self.plot_widget)
         
-        # Add placeholders for Transformation Controls
+        self.freq_plot_widget = PlotWidget(self)
+        self.right_layout.addWidget(self.freq_plot_widget)
+        
+        # Control panel controls
         self.control_layout.addWidget(QLabel("Box-Cox Lambda:", self.control_panel))
         self.lambda_spin = QDoubleSpinBox(self.control_panel)
         self.lambda_spin.setRange(-2.0, 2.0)
@@ -295,18 +503,183 @@ class TransformTab(BaseTab):
         self.apply_btn = QPushButton("Apply Transformations", self.control_panel)
         self.control_layout.addWidget(self.apply_btn)
         
+        self.control_layout.addWidget(QLabel("ADF Test (Transformed):", self.control_panel))
+        self.adf_results_browser = QTextBrowser(self.control_panel)
+        self.adf_results_browser.setFontFamily("Courier New")
+        self.adf_results_browser.setMinimumHeight(150)
+        self.control_layout.addWidget(self.adf_results_browser)
+        
         self.control_layout.addStretch()
         
-        # Temporary simulation button for Task 0
-        self.sim_btn = QPushButton("[Simulate Stationarity]", self.control_panel)
-        self.sim_btn.setObjectName("primaryButton")
-        self.sim_btn.clicked.connect(self.simulate_stationarity)
-        self.control_layout.addWidget(self.sim_btn)
+        # Connect signals
+        self.auto_lambda_btn.clicked.connect(self.auto_optimize_lambda)
+        self.apply_btn.clicked.connect(self.apply_transformations)
+        self.d_spin.valueChanged.connect(self.plot_frequency_response)
+        self.D_spin.valueChanged.connect(self.plot_frequency_response)
+        self.s_spin.valueChanged.connect(self.plot_frequency_response)
         
-    def simulate_stationarity(self):
-        # Simulate stationarity processing
-        self.main_window.state.stationary_series = pd.Series(np.random.randn(100))
-        self.main_window.update_ui_from_state()
+    def auto_optimize_lambda(self):
+        original_series = self.main_window.state.original_series
+        if original_series is None:
+            QMessageBox.warning(self, "No Data Loaded", "Please load a dataset on Tab 1 first.")
+            return
+            
+        try:
+            from axis1_preprocessing import apply_box_cox
+            _, opt_lam = apply_box_cox(original_series, None)
+            self.lambda_spin.setValue(opt_lam)
+        except Exception as e:
+            QMessageBox.critical(self, "Optimization Error", str(e))
+            
+    def apply_transformations(self):
+        state = self.main_window.state
+        original_series = state.original_series
+        if original_series is None:
+            QMessageBox.warning(self, "No Data Loaded", "Please load a dataset on Tab 1 first.")
+            return
+            
+        try:
+            from axis1_preprocessing import apply_box_cox, apply_differencing, run_adf_test
+            
+            # Reset transformations list
+            state.transformations = []
+            
+            # 1. Box-Cox
+            lam = self.lambda_spin.value()
+            if abs(lam - 1.0) > 1e-7:
+                transformed_series, applied_lam = apply_box_cox(original_series, lam)
+                state.box_cox_lambda = applied_lam
+                state.transformations.append({"type": "boxcox", "lambda": applied_lam})
+            else:
+                transformed_series = original_series.copy()
+                state.box_cox_lambda = None
+                
+            # 2. Differencing
+            d = self.d_spin.value()
+            D = self.D_spin.value()
+            s = self.s_spin.value()
+            
+            if d > 0 or D > 0:
+                transformed_series = apply_differencing(transformed_series, d, D, s)
+                if d > 0:
+                    state.transformations.append({"type": "diff", "d": d})
+                if D > 0:
+                    state.transformations.append({"type": "seasonal_diff", "D": D, "s": s})
+                    
+            state.diff_order_d = d
+            state.diff_order_D = D
+            state.seasonal_period_s = s
+            
+            # Update state with stationary series
+            state.stationary_series = transformed_series
+            
+            # Plot
+            self.plot_transformed()
+            self.plot_frequency_response()
+            
+            # Run ADF on stationary series
+            try:
+                res = run_adf_test(transformed_series)
+                crit_str = "\n".join([f"  {k}: {v:.4f}" for k, v in res['critical_values'].items()])
+                out = (
+                    f"ADF Test (Transformed):\n"
+                    f"-----------------------\n"
+                    f"ADF Statistic: {res['adf_stat']:.4f}\n"
+                    f"p-value:       {res['p_value']:.6f}\n"
+                    f"Verdict:       {res['verdict']}\n\n"
+                    f"Critical Values:\n"
+                    f"{crit_str}\n"
+                )
+                self.adf_results_browser.setText(out)
+            except Exception as adf_err:
+                self.adf_results_browser.setText(f"ADF Test could not be run: {adf_err}")
+                
+            # Enable downstream tabs
+            self.main_window.update_ui_from_state()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Transformation Error", str(e))
+            
+    def plot_transformed(self):
+        series = self.main_window.state.stationary_series
+        if series is None:
+            return
+            
+        try:
+            window_size = self.main_window.tabs[0].roll_spin.value()
+        except Exception:
+            window_size = 12
+            
+        fig = self.plot_widget.canvas.figure
+        fig.clear()
+        
+        ax1 = fig.add_subplot(111)
+        ax1.tick_params(colors='#1F2937')
+        ax1.xaxis.label.set_color('#1F2937')
+        ax1.yaxis.label.set_color('#1F2937')
+        ax1.title.set_color('#1F2937')
+        
+        # Drop NaNs for plotting rolling statistics
+        clean_series = series.dropna()
+        if len(clean_series) == 0:
+            return
+            
+        ax1.plot(clean_series.index, clean_series.values, color='#1F2937', label='Transformed Series', alpha=0.8)
+        ax1.set_ylabel('Transformed Values')
+        ax1.set_xlabel(clean_series.index.name if clean_series.index.name else 'Time')
+        
+        # Rolling Mean
+        rolling_mean = clean_series.rolling(window=window_size, min_periods=1).mean()
+        ax1.plot(clean_series.index, rolling_mean, color='#2563EB', label=f'Rolling Mean ({window_size})')
+        
+        # Rolling Std
+        rolling_std = clean_series.rolling(window=window_size, min_periods=1).std()
+        ax2 = ax1.twinx()
+        ax2.plot(clean_series.index, rolling_std, color='#16A34A', label=f'Rolling Std ({window_size})', linestyle='--')
+        ax2.tick_params(colors='#16A34A')
+        ax2.yaxis.label.set_color('#16A34A')
+        ax2.set_ylabel('Rolling Standard Deviation')
+        
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+        
+        fig.tight_layout()
+        self.plot_widget.canvas.draw()
+        
+    def plot_frequency_response(self):
+        d = self.d_spin.value()
+        D = self.D_spin.value()
+        s = self.s_spin.value()
+        
+        from axis1_preprocessing import compute_frequency_response
+        omega, magnitude = compute_frequency_response(d, D, s)
+        
+        fig = self.freq_plot_widget.canvas.figure
+        fig.clear()
+        
+        ax = fig.add_subplot(111)
+        ax.tick_params(colors='#1F2937')
+        ax.xaxis.label.set_color('#1F2937')
+        ax.yaxis.label.set_color('#1F2937')
+        ax.title.set_color('#1F2937')
+        
+        ax.plot(omega, magnitude, color='#2563EB', label='Differencing Filter')
+        ax.set_title('Frequency Response of Differencing Filter')
+        ax.set_xlabel('Frequency (radians/sample)')
+        ax.set_ylabel('Magnitude Response |H(e^{-iω})|')
+        ax.set_xlim(0, np.pi)
+        
+        if D > 0 and s > 1:
+            w_seas = 2 * np.pi / s
+            h = 1
+            while h * w_seas <= np.pi:
+                ax.axvline(h * w_seas, color='#DC2626', linestyle=':', alpha=0.6, label='Seasonal Harmonics' if h == 1 else "")
+                h += 1
+                
+        ax.legend(loc='best')
+        fig.tight_layout()
+        self.freq_plot_widget.canvas.draw()
 
 
 class SpectralTab(BaseTab):
