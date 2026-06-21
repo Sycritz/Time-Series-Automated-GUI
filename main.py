@@ -747,7 +747,12 @@ class SpectralTab(BaseTab):
         self.plot_widget = PlotWidget(self)
         self.right_layout.addWidget(self.plot_widget)
         
-        # Add placeholders for Spectral Controls
+        # QTextBrowser for cycle detection results (added to right layout below the plot)
+        self.results_browser = QTextBrowser(self.control_panel)
+        self.results_browser.setMaximumHeight(150)
+        self.right_layout.addWidget(self.results_browser)
+        
+        # Left Panel (Controls)
         self.control_layout.addWidget(QLabel("Data Taper:", self.control_panel))
         self.taper_combo = QComboBox(self.control_panel)
         self.taper_combo.addItems(["None", "Cosine Bell", "Hann", "Hamming"])
@@ -758,6 +763,11 @@ class SpectralTab(BaseTab):
         self.taper_pct_spin.setSingleStep(0.05)
         self.taper_pct_spin.setValue(0.1)
         self.control_layout.addWidget(self.taper_pct_spin)
+        
+        self.control_layout.addWidget(QLabel("Scale:", self.control_panel))
+        self.freq_period_toggle = QComboBox(self.control_panel)
+        self.freq_period_toggle.addItems(["Frequency Scale", "Period Scale"])
+        self.control_layout.addWidget(self.freq_period_toggle)
         
         self.control_layout.addWidget(QLabel("Smoothed Estimator Window:", self.control_panel))
         self.window_combo = QComboBox(self.control_panel)
@@ -776,18 +786,180 @@ class SpectralTab(BaseTab):
         self.detect_btn = QPushButton("Detect Cycles", self.control_panel)
         self.control_layout.addWidget(self.detect_btn)
         
+        # Statistical Warning Label
+        self.warning_label = QLabel(
+            "The raw periodogram is asymptotically unbiased for the spectral density but is not a consistent estimator. "
+            "Its variance does not decrease as sample size n increases. Each ordinate I(λj) behaves approximately like "
+            "1/2 f(λj) chi^2_2. Use the smoothed estimator below for reliable inference.",
+            self.control_panel
+        )
+        self.warning_label.setWordWrap(True)
+        self.warning_label.setStyleSheet("color: #DC2626; font-size: 11px;")
+        self.control_layout.addWidget(self.warning_label)
+        
         self.control_layout.addStretch()
         
-        # Temporary simulation button for Task 0
-        self.sim_btn = QPushButton("[Simulate Cycle Detection]", self.control_panel)
-        self.sim_btn.setObjectName("primaryButton")
-        self.sim_btn.clicked.connect(self.simulate_cycles)
-        self.control_layout.addWidget(self.sim_btn)
+        # Instance variables for data storage to enable fast scaling toggling
+        self.raw_freqs = None
+        self.raw_pgram = None
+        self.smooth_freqs = None
+        self.smooth_val = None
+        self.ci_lower = None
+        self.ci_upper = None
         
-    def simulate_cycles(self):
-        # Simulate cycle detection results
-        self.main_window.state.detected_cycles = [{"frequency": 0.083, "period": 12.0}]
-        self.main_window.update_ui_from_state()
+        # Connect signals
+        self.estimate_btn.clicked.connect(self.estimate_spectrum)
+        self.detect_btn.clicked.connect(self.detect_cycles_click)
+        self.freq_period_toggle.currentIndexChanged.connect(self.plot_spectrum)
+        
+    def estimate_spectrum(self):
+        series = self.main_window.state.stationary_series
+        if series is None:
+            QMessageBox.warning(self, "No Stationary Data", "Please apply transformations on Tab 2 first.")
+            return
+            
+        clean_series = series.dropna()
+        if len(clean_series) < 3:
+            QMessageBox.warning(self, "Insufficient Data", "The stationary series must contain at least 3 points.")
+            return
+            
+        taper = self.taper_combo.currentText()
+        taper_arg = None if taper == "None" else taper
+        taper_pct = self.taper_pct_spin.value()
+        
+        window = self.window_combo.currentText()
+        M = self.bandwidth_spin.value()
+        
+        try:
+            from axis2_spectral import compute_periodogram, smooth_spectrum
+            
+            raw_freqs, raw_pgram = compute_periodogram(clean_series, taper_arg, taper_pct)
+            smooth_freqs, smooth_val, ci_lower, ci_upper = smooth_spectrum(clean_series, window, M)
+            
+            self.raw_freqs = raw_freqs
+            self.raw_pgram = raw_pgram
+            self.smooth_freqs = smooth_freqs
+            self.smooth_val = smooth_val
+            self.ci_lower = ci_lower
+            self.ci_upper = ci_upper
+            
+            self.plot_spectrum()
+        except Exception as e:
+            QMessageBox.critical(self, "Estimation Error", str(e))
+            
+    def detect_cycles_click(self):
+        if self.smooth_freqs is None or self.smooth_val is None or self.ci_upper is None:
+            QMessageBox.warning(self, "No Spectrum Estimated", "Please click 'Estimate Spectrum' first.")
+            return
+            
+        try:
+            from axis2_spectral import detect_cycles
+            cycles = detect_cycles(self.smooth_freqs, self.smooth_val, self.ci_upper)
+            self.main_window.state.detected_cycles = cycles
+            
+            if not cycles:
+                html = "<p>No significant cycles detected.</p>"
+            else:
+                html = "<h3>Detected Cycles</h3><table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%; border: 1px solid #D1D5DB;'>"
+                html += "<tr style='background-color: #F3F4F6;'><th>Frequency (rad/sample)</th><th>Period (samples)</th><th>Significant</th></tr>"
+                for c in cycles:
+                    sig_str = "<font color='#16A34A'><b>Yes</b></font>" if c["significant"] else "No"
+                    html += f"<tr><td>{c['frequency']:.4f}</td><td>{c['period']:.2f}</td><td>{sig_str}</td></tr>"
+                html += "</table>"
+                
+            self.results_browser.setHtml(html)
+            self.main_window.update_ui_from_state()
+        except Exception as e:
+            QMessageBox.critical(self, "Cycle Detection Error", str(e))
+            
+    def plot_spectrum(self):
+        if self.raw_freqs is None:
+            return
+            
+        fig = self.plot_widget.canvas.figure
+        fig.clear()
+        
+        ax = fig.add_subplot(111)
+        self.plot_widget.canvas.axes = ax
+        ax.tick_params(colors='#1F2937')
+        ax.xaxis.label.set_color('#1F2937')
+        ax.yaxis.label.set_color('#1F2937')
+        ax.title.set_color('#1F2937')
+        
+        scale = self.freq_period_toggle.currentText()
+        is_period = (scale == "Period Scale")
+        
+        if is_period:
+            valid_raw = self.raw_freqs > 0
+            x_raw = 2.0 * np.pi / self.raw_freqs[valid_raw]
+            y_raw = self.raw_pgram[valid_raw]
+            
+            valid_smooth = self.smooth_freqs > 0
+            x_smooth = 2.0 * np.pi / self.smooth_freqs[valid_smooth]
+            y_smooth = self.smooth_val[valid_smooth]
+            y_ci_lower = self.ci_lower[valid_smooth]
+            y_ci_upper = self.ci_upper[valid_smooth]
+            
+            xlabel = "Period (samples)"
+            title = "Spectral Density Estimators (Period Scale)"
+        else:
+            x_raw = self.raw_freqs
+            y_raw = self.raw_pgram
+            
+            x_smooth = self.smooth_freqs
+            y_smooth = self.smooth_val
+            y_ci_lower = self.ci_lower
+            y_ci_upper = self.ci_upper
+            
+            xlabel = "Frequency (radians/sample)"
+            title = "Spectral Density Estimators (Frequency Scale)"
+            
+        # Plot raw periodogram
+        ax.plot(x_raw, y_raw, color='#9CA3AF', alpha=0.6, label='Raw Periodogram', linewidth=1)
+        
+        # Plot smoothed spectrum
+        ax.plot(x_smooth, y_smooth, color='#2563EB', alpha=0.9, label='Smoothed Spectrum', linewidth=2)
+        
+        # Plot 95% Confidence Interval band
+        ax.fill_between(x_smooth, y_ci_lower, y_ci_upper, color='#2563EB', alpha=0.15, label='95% Confidence Band')
+        
+        # Overlay theoretical spectrum if model is fitted
+        self.update_parametric_spectrum_overlay(ax, is_period)
+        
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel('Spectral Density')
+        ax.set_title(title)
+        ax.legend(loc='best')
+        
+        fig.tight_layout()
+        self.plot_widget.canvas.draw()
+        
+    def update_parametric_spectrum_overlay(self, ax=None, is_period=False):
+        if ax is None:
+            # If called as a slot from outside, replot to ensure clean rendering
+            self.plot_spectrum()
+            return
+            
+        state = self.main_window.state
+        if state.fitted_model is None or state.model_params is None:
+            return
+            
+        ar_coeffs = state.model_params.get("ar", [])
+        ma_coeffs = state.model_params.get("ma", [])
+        sigma2 = state.model_params.get("sigma2", 1.0)
+        
+        from axis2_spectral import compute_parametric_spectrum
+        param_freqs, param_spec = compute_parametric_spectrum(ar_coeffs, ma_coeffs, sigma2, n_points=512)
+        
+        if is_period:
+            valid = param_freqs > 0
+            x_vals = 2.0 * np.pi / param_freqs[valid]
+            y_vals = param_spec[valid]
+        else:
+            x_vals = param_freqs
+            y_vals = param_spec
+            
+        ax.plot(x_vals, y_vals, color='#D97706', linewidth=2.5, linestyle='--', label='Parametric ARMA Spectrum')
 
 
 class ModelingTab(BaseTab):
@@ -1029,6 +1201,10 @@ class MainWindow(QMainWindow):
             self.indicators[5].set_status('pass')
         else:
             self.indicators[5].set_status('neutral')
+            
+        # Update tab 3 parametric overlay if model is fitted
+        if hasattr(self, 'tabs') and len(self.tabs) > 2:
+            self.tabs[2].update_parametric_spectrum_overlay()
 
 
 if __name__ == "__main__":
