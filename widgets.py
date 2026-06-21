@@ -88,6 +88,13 @@ class PlotWidget(QWidget):
             self, "Export Plot", "", "PNG Image (*.png);;PDF Document (*.pdf)"
         )
         if file_path:
+            ext = ".png"
+            if "pdf" in selected_filter.lower():
+                ext = ".pdf"
+            
+            if not file_path.lower().endswith(ext):
+                file_path += ext
+
             # Save the figure, maintaining clean white background
             self.canvas.figure.savefig(
                 file_path, 

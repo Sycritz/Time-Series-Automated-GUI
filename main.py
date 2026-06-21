@@ -6,9 +6,9 @@ import numpy as np
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QFrame, QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QTextBrowser,
-    QLineEdit, QTableWidget, QProgressBar, QTabBar
+    QProgressBar, QTabBar
 )
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt
 from state import AnalysisState
 from widgets import StatusIndicator, PlotWidget
 
@@ -191,16 +191,20 @@ class BaseTab(QWidget):
         # Add Left Panel to Main Layout with stretch factor 3 (30%)
         self.layout.addWidget(self.control_panel, 3)
         
-        # Right Panel (Plot/Visualization)
-        self.plot_widget = PlotWidget(self)
-        # Add Right Panel to Main Layout with stretch factor 7 (70%)
-        self.layout.addWidget(self.plot_widget, 7)
+        # Right Panel (Container)
+        self.right_container = QWidget(self)
+        self.right_layout = QVBoxLayout(self.right_container)
+        self.right_layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.addWidget(self.right_container, 7)
 
 
 class DataLoadTab(BaseTab):
     def __init__(self, main_window, parent=None):
         super().__init__("Data Load & Explore", parent)
         self.main_window = main_window
+        
+        self.plot_widget = PlotWidget(self)
+        self.right_layout.addWidget(self.plot_widget)
         
         # Add placeholders for Data Load Controls
         self.control_layout.addWidget(QLabel("Select Time Series CSV:", self.control_panel))
@@ -250,6 +254,9 @@ class TransformTab(BaseTab):
     def __init__(self, main_window, parent=None):
         super().__init__("Transform to Stationarity", parent)
         self.main_window = main_window
+        
+        self.plot_widget = PlotWidget(self)
+        self.right_layout.addWidget(self.plot_widget)
         
         # Add placeholders for Transformation Controls
         self.control_layout.addWidget(QLabel("Box-Cox Lambda:", self.control_panel))
@@ -304,8 +311,11 @@ class TransformTab(BaseTab):
 
 class SpectralTab(BaseTab):
     def __init__(self, main_window, parent=None):
-        super().__init__("Spectral Analysis", parent)
+        super().__init__("Spectral Exploration & Cycle Detection", parent)
         self.main_window = main_window
+        
+        self.plot_widget = PlotWidget(self)
+        self.right_layout.addWidget(self.plot_widget)
         
         # Add placeholders for Spectral Controls
         self.control_layout.addWidget(QLabel("Data Taper:", self.control_panel))
@@ -352,8 +362,11 @@ class SpectralTab(BaseTab):
 
 class ModelingTab(BaseTab):
     def __init__(self, main_window, parent=None):
-        super().__init__("Model Identification", parent)
+        super().__init__("Model Identification & Selection", parent)
         self.main_window = main_window
+        
+        self.plot_widget = PlotWidget(self)
+        self.right_layout.addWidget(self.plot_widget)
         
         # Add placeholders for Modeling Controls
         self.control_layout.addWidget(QLabel("ACF/PACF Max Lag:", self.control_panel))
@@ -373,6 +386,7 @@ class ModelingTab(BaseTab):
         
         self.control_layout.addWidget(QLabel("Grid Search Limits:", self.control_panel))
         self.grid_p_spin = QSpinBox(self.control_panel)
+        self.grid_p_spin.setRange(0, 5)
         self.grid_p_spin.setValue(2)
         self.control_layout.addWidget(QLabel("Max p:", self.control_panel))
         self.control_layout.addWidget(self.grid_p_spin)
@@ -403,8 +417,11 @@ class ModelingTab(BaseTab):
 
 class ValidationTab(BaseTab):
     def __init__(self, main_window, parent=None):
-        super().__init__("Model Validation", parent)
+        super().__init__("Model Validation & Residual Diagnostics", parent)
         self.main_window = main_window
+        
+        self.plot_widget = PlotWidget(self)
+        self.right_layout.addWidget(self.plot_widget)
         
         # Add placeholders for Validation Controls
         self.control_layout.addWidget(QLabel("Ljung-Box Lags:", self.control_panel))
@@ -447,8 +464,11 @@ class ValidationTab(BaseTab):
 
 class ForecastingTab(BaseTab):
     def __init__(self, main_window, parent=None):
-        super().__init__("Generate Forecasts", parent)
+        super().__init__("Generate & View Forecasts", parent)
         self.main_window = main_window
+        
+        self.plot_widget = PlotWidget(self)
+        self.right_layout.addWidget(self.plot_widget)
         
         # Add placeholders for Forecasting Controls
         self.control_layout.addWidget(QLabel("Forecast Horizon h:", self.control_panel))
@@ -499,10 +519,10 @@ class MainWindow(QMainWindow):
         tab_names = [
             "1. Data Load & Explore",
             "2. Transform to Stationarity",
-            "3. Spectral Analysis",
-            "4. Model Identification",
-            "5. Model Validation",
-            "6. Generate Forecasts"
+            "3. Spectral Exploration & Cycle Detection",
+            "4. Model Identification & Selection",
+            "5. Model Validation & Residual Diagnostics",
+            "6. Generate & View Forecasts"
         ]
         
         # Create indicators and add tabs
@@ -564,10 +584,13 @@ class MainWindow(QMainWindow):
             
         # Tab 5: Validation passed / failed
         if self.state.model_fitted:
-            if self.state.validation_passed:
-                self.indicators[4].set_status('pass')
+            if self.state.validation_run:
+                if self.state.validation_passed:
+                    self.indicators[4].set_status('pass')
+                else:
+                    self.indicators[4].set_status('fail')
             else:
-                self.indicators[4].set_status('fail')
+                self.indicators[4].set_status('neutral')
         else:
             self.indicators[4].set_status('neutral')
             
