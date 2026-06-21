@@ -93,10 +93,10 @@ def apply_differencing(series: pd.Series, d: int, D: int, s: int) -> pd.Series:
 
 def compute_frequency_response(d: int, D: int, s: int, n_points: int = 512) -> tuple[np.ndarray, np.ndarray]:
     """
-    Computes the frequency response magnitude of the differencing filter.
+    Computes the squared gain function of the differencing filter.
     """
     omega = np.linspace(0, np.pi, n_points)
-    term1 = (2.0 * np.abs(np.sin(omega / 2.0))) ** d
-    term2 = (2.0 * np.abs(np.sin(s * omega / 2.0))) ** D
-    magnitude = term1 * term2
-    return omega, magnitude
+    term1 = (2.0 * np.abs(np.sin(omega / 2.0))) ** (2 * d)
+    term2 = (2.0 * np.abs(np.sin(s * omega / 2.0))) ** (2 * D)
+    gain = term1 * term2
+    return omega, gain

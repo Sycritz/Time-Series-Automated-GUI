@@ -327,6 +327,23 @@ class DataLoadTab(BaseTab):
                 from axis1_preprocessing import load_csv
                 self.df = load_csv(file_path)
                 
+                # Clear previous state
+                self.raw_series = None
+                self.main_window.state.original_series = None
+                
+                # Clear Tab 1 plot and ADF
+                self.plot_widget.canvas.figure.clear()
+                self.plot_widget.canvas.draw()
+                self.adf_results_browser.clear()
+                
+                # Clear Tab 2 plots and ADF
+                tab2 = self.main_window.tabs[1]
+                tab2.plot_widget.canvas.figure.clear()
+                tab2.plot_widget.canvas.draw()
+                tab2.freq_plot_widget.canvas.figure.clear()
+                tab2.freq_plot_widget.canvas.draw()
+                tab2.adf_results_browser.clear()
+                
                 # Update dropdown columns
                 self.time_col_combo.blockSignals(True)
                 self.val_col_combo.blockSignals(True)
@@ -346,6 +363,9 @@ class DataLoadTab(BaseTab):
                 model = PandasModel(self.df)
                 self.preview_table.setModel(model)
                 self.export_table_btn.setEnabled(True)
+                
+                # Update main UI to enforce tab gating
+                self.main_window.update_ui_from_state()
                 
             except Exception as e:
                 QMessageBox.critical(self, "Error Loading File", str(e))
@@ -434,32 +454,33 @@ class DataLoadTab(BaseTab):
         fig = self.plot_widget.canvas.figure
         fig.clear()
         
-        ax1 = fig.add_subplot(111)
-        ax1.tick_params(colors='#1F2937')
-        ax1.xaxis.label.set_color('#1F2937')
-        ax1.yaxis.label.set_color('#1F2937')
-        ax1.title.set_color('#1F2937')
+        # Two subplots side-by-side
+        ax1 = fig.add_subplot(121)
+        ax2 = fig.add_subplot(122)
         
-        # Plot series
+        # Configure style
+        for ax in [ax1, ax2]:
+            ax.tick_params(colors='#1F2937')
+            ax.xaxis.label.set_color('#1F2937')
+            ax.yaxis.label.set_color('#1F2937')
+            ax.title.set_color('#1F2937')
+            
+        # Subplot 1: Series Values & Rolling Mean
         ax1.plot(series.index, series.values, color='#1F2937', label='Series Values', alpha=0.8)
-        ax1.set_ylabel('Values')
-        ax1.set_xlabel(series.index.name if series.index.name else 'Time')
-        
-        # Rolling Mean
         rolling_mean = series.rolling(window=window_size, min_periods=1).mean()
         ax1.plot(series.index, rolling_mean, color='#2563EB', label=f'Rolling Mean ({window_size})')
+        ax1.set_ylabel('Values')
+        ax1.set_xlabel(series.index.name if series.index.name else 'Time')
+        ax1.legend(loc='best')
+        ax1.set_title("Rolling Mean")
         
-        # Rolling Std
+        # Subplot 2: Rolling Std
         rolling_std = series.rolling(window=window_size, min_periods=1).std()
-        ax2 = ax1.twinx()
         ax2.plot(series.index, rolling_std, color='#16A34A', label=f'Rolling Std ({window_size})', linestyle='--')
-        ax2.tick_params(colors='#16A34A')
-        ax2.yaxis.label.set_color('#16A34A')
-        ax2.set_ylabel('Rolling Standard Deviation')
-        
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+        ax2.set_ylabel('Standard Deviation')
+        ax2.set_xlabel(series.index.name if series.index.name else 'Time')
+        ax2.legend(loc='best')
+        ax2.set_title("Rolling Standard Deviation")
         
         fig.tight_layout()
         self.plot_widget.canvas.draw()
@@ -475,12 +496,13 @@ class DataLoadTab(BaseTab):
             res = run_adf_test(series)
             
             crit_str = "\n".join([f"  {k}: {v:.4f}" for k, v in res['critical_values'].items()])
+            english_verdict = f"Data is {'stationary' if res['p_value'] < 0.05 else 'non-stationary'} at the 5% significance level"
             out = (
                 f"Augmented Dickey-Fuller (ADF) Test:\n"
                 f"-----------------------------------\n"
                 f"ADF Statistic: {res['adf_stat']:.4f}\n"
                 f"p-value:       {res['p_value']:.6f}\n"
-                f"Verdict:       {res['verdict']}\n\n"
+                f"Verdict:       {res['verdict']} ({english_verdict})\n\n"
                 f"Critical Values:\n"
                 f"{crit_str}\n"
             )
@@ -616,12 +638,13 @@ class TransformTab(BaseTab):
             try:
                 res = run_adf_test(transformed_series)
                 crit_str = "\n".join([f"  {k}: {v:.4f}" for k, v in res['critical_values'].items()])
+                english_verdict = f"Data is {'stationary' if res['p_value'] < 0.05 else 'non-stationary'} at the 5% significance level"
                 out = (
                     f"ADF Test (Transformed):\n"
                     f"-----------------------\n"
                     f"ADF Statistic: {res['adf_stat']:.4f}\n"
                     f"p-value:       {res['p_value']:.6f}\n"
-                    f"Verdict:       {res['verdict']}\n\n"
+                    f"Verdict:       {res['verdict']} ({english_verdict})\n\n"
                     f"Critical Values:\n"
                     f"{crit_str}\n"
                 )
@@ -648,36 +671,35 @@ class TransformTab(BaseTab):
         fig = self.plot_widget.canvas.figure
         fig.clear()
         
-        ax1 = fig.add_subplot(111)
-        ax1.tick_params(colors='#1F2937')
-        ax1.xaxis.label.set_color('#1F2937')
-        ax1.yaxis.label.set_color('#1F2937')
-        ax1.title.set_color('#1F2937')
+        # Two subplots side-by-side
+        ax1 = fig.add_subplot(121)
+        ax2 = fig.add_subplot(122)
         
+        for ax in [ax1, ax2]:
+            ax.tick_params(colors='#1F2937')
+            ax.xaxis.label.set_color('#1F2937')
+            ax.yaxis.label.set_color('#1F2937')
+            ax.title.set_color('#1F2937')
+            
         # Drop NaNs for plotting rolling statistics
         clean_series = series.dropna()
         if len(clean_series) == 0:
             return
             
         ax1.plot(clean_series.index, clean_series.values, color='#1F2937', label='Transformed Series', alpha=0.8)
-        ax1.set_ylabel('Transformed Values')
-        ax1.set_xlabel(clean_series.index.name if clean_series.index.name else 'Time')
-        
-        # Rolling Mean
         rolling_mean = clean_series.rolling(window=window_size, min_periods=1).mean()
         ax1.plot(clean_series.index, rolling_mean, color='#2563EB', label=f'Rolling Mean ({window_size})')
+        ax1.set_ylabel('Transformed Values')
+        ax1.set_xlabel(clean_series.index.name if clean_series.index.name else 'Time')
+        ax1.legend(loc='best')
+        ax1.set_title("Rolling Mean")
         
-        # Rolling Std
         rolling_std = clean_series.rolling(window=window_size, min_periods=1).std()
-        ax2 = ax1.twinx()
         ax2.plot(clean_series.index, rolling_std, color='#16A34A', label=f'Rolling Std ({window_size})', linestyle='--')
-        ax2.tick_params(colors='#16A34A')
-        ax2.yaxis.label.set_color('#16A34A')
-        ax2.set_ylabel('Rolling Standard Deviation')
-        
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+        ax2.set_ylabel('Standard Deviation')
+        ax2.set_xlabel(clean_series.index.name if clean_series.index.name else 'Time')
+        ax2.legend(loc='best')
+        ax2.set_title("Rolling Standard Deviation")
         
         fig.tight_layout()
         self.plot_widget.canvas.draw()
