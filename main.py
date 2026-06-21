@@ -236,9 +236,29 @@ class DataLoadTab(BaseTab):
         self.raw_series = None
         
         # Repopulate right layout: table preview at top, plot below
+        table_container = QWidget(self)
+        table_layout = QVBoxLayout(table_container)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.setSpacing(4)
+        
+        table_header_layout = QHBoxLayout()
+        table_label = QLabel("Data Preview (First 10 Rows)", self)
+        table_label.setStyleSheet("font-weight: bold; color: #1F2937;")
+        self.export_table_btn = QPushButton("Export Table CSV", self)
+        self.export_table_btn.setEnabled(False)
+        self.export_table_btn.clicked.connect(self.export_table_csv)
+        
+        table_header_layout.addWidget(table_label)
+        table_header_layout.addStretch()
+        table_header_layout.addWidget(self.export_table_btn)
+        
+        table_layout.addLayout(table_header_layout)
+        
         self.preview_table = QTableView(self)
         self.preview_table.setFixedHeight(180)
-        self.right_layout.addWidget(self.preview_table)
+        table_layout.addWidget(self.preview_table)
+        
+        self.right_layout.addWidget(table_container)
         
         self.plot_widget = PlotWidget(self)
         self.right_layout.addWidget(self.plot_widget)
@@ -325,9 +345,24 @@ class DataLoadTab(BaseTab):
                 # Set table model preview
                 model = PandasModel(self.df)
                 self.preview_table.setModel(model)
+                self.export_table_btn.setEnabled(True)
                 
             except Exception as e:
                 QMessageBox.critical(self, "Error Loading File", str(e))
+
+    def export_table_csv(self):
+        if self.df is None:
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Table to CSV", "", "CSV Files (*.csv)"
+        )
+        if file_path:
+            if not file_path.lower().endswith(".csv"):
+                file_path += ".csv"
+            try:
+                self.df.to_csv(file_path, index=False)
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export table: {str(e)}")
                 
     def on_columns_selected(self):
         time_col = self.time_col_combo.currentText()
