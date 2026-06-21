@@ -864,8 +864,9 @@ class SpectralTab(BaseTab):
             
             # Compute equivalent degrees of freedom nu for detect_cycles
             n = len(clean_series)
-            w_vals = np.zeros(M + 1)
-            for h in range(1, M + 1):
+            M_eff = min(M, n - 1)
+            w_vals = np.zeros(M_eff + 1)
+            for h in range(1, M_eff + 1):
                 val = h / M
                 if window == 'Daniell':
                     w_vals[h] = 1.0
