@@ -6,7 +6,8 @@ import numpy as np
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QFrame, QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QTextBrowser,
-    QProgressBar, QTabBar, QTableView, QMessageBox, QFileDialog
+    QProgressBar, QTabBar, QTableView, QMessageBox, QFileDialog,
+    QTableWidget, QTableWidgetItem, QSplitter, QGridLayout
 )
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
 from state import AnalysisState
@@ -1035,10 +1036,64 @@ class ModelingTab(BaseTab):
         super().__init__("Model Identification & Selection", parent)
         self.main_window = main_window
         
-        self.plot_widget = PlotWidget(self)
-        self.right_layout.addWidget(self.plot_widget)
+        self.acf_vals = None
+        self.pacf_vals = None
         
-        # Add placeholders for Modeling Controls
+        # Upper Right: PlotWidget for ACF/PACF
+        self.plot_widget = PlotWidget(self)
+        self.right_layout.addWidget(self.plot_widget, 5)
+        
+        # Connect hover event on canvas
+        self.plot_widget.canvas.mpl_connect('motion_notify_event', self.on_hover)
+        
+        # Lower Right: Splitter containing Top-10 Model table and Selected Model parameters
+        splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        
+        # Left side of splitter: Top-10 Model Table
+        top10_container = QWidget(self)
+        top10_layout = QVBoxLayout(top10_container)
+        top10_layout.setContentsMargins(0, 0, 0, 0)
+        top10_label = QLabel("Top 10 Candidate Models", self)
+        top10_label.setStyleSheet("font-weight: bold; color: #1F2937;")
+        top10_layout.addWidget(top10_label)
+        
+        self.model_table = QTableWidget(self)
+        self.model_table.setColumnCount(8)
+        self.model_table.setHorizontalHeaderLabels([
+            "Rank", "Model", "AICc", "BIC", "LogLik", "k", "Show Spectrum", "Select Model"
+        ])
+        top10_layout.addWidget(self.model_table)
+        splitter.addWidget(top10_container)
+        
+        # Right side of splitter: Parameter Summary
+        param_container = QWidget(self)
+        param_layout = QVBoxLayout(param_container)
+        param_layout.setContentsMargins(0, 0, 0, 0)
+        param_label = QLabel("Fitted Model Parameters", self)
+        param_label.setStyleSheet("font-weight: bold; color: #1F2937;")
+        param_layout.addWidget(param_label)
+        
+        self.param_table = QTableWidget(self)
+        self.param_table.setColumnCount(5)
+        self.param_table.setHorizontalHeaderLabels([
+            "Parameter", "Estimate", "Std. Error", "z-value", "p-value"
+        ])
+        param_layout.addWidget(self.param_table)
+        
+        info_layout = QHBoxLayout()
+        self.sigma2_label = QLabel("Estimated σ̂²: N/A", self)
+        self.sigma2_label.setStyleSheet("font-weight: 500; color: #1F2937;")
+        self.loglik_label = QLabel("Log-Likelihood: N/A", self)
+        self.loglik_label.setStyleSheet("font-weight: 500; color: #1F2937;")
+        info_layout.addWidget(self.sigma2_label)
+        info_layout.addStretch()
+        info_layout.addWidget(self.loglik_label)
+        param_layout.addLayout(info_layout)
+        
+        splitter.addWidget(param_container)
+        self.right_layout.addWidget(splitter, 5)
+        
+        # Left Panel (Controls)
         self.control_layout.addWidget(QLabel("ACF/PACF Max Lag:", self.control_panel))
         self.lag_spin = QSpinBox(self.control_panel)
         self.lag_spin.setRange(1, 100)
@@ -1048,20 +1103,56 @@ class ModelingTab(BaseTab):
         self.plot_acf_btn = QPushButton("Plot ACF/PACF", self.control_panel)
         self.control_layout.addWidget(self.plot_acf_btn)
         
-        self.suggest_acf_btn = QPushButton("Suggest Model (ACF/PACF)", self.control_panel)
-        self.control_layout.addWidget(self.suggest_acf_btn)
+        self.control_layout.addWidget(QLabel("Model Heuristic Suggestions:", self.control_panel))
+        heuristic_btn_layout = QHBoxLayout()
+        self.suggest_acf_btn = QPushButton("Suggest (ACF/PACF)", self.control_panel)
+        self.suggest_spec_btn = QPushButton("Suggest (Spectral)", self.control_panel)
+        heuristic_btn_layout.addWidget(self.suggest_acf_btn)
+        heuristic_btn_layout.addWidget(self.suggest_spec_btn)
+        self.control_layout.addLayout(heuristic_btn_layout)
         
-        self.suggest_spec_btn = QPushButton("Suggest Model (Spectral)", self.control_panel)
-        self.control_layout.addWidget(self.suggest_spec_btn)
+        self.suggestion_browser = QTextBrowser(self.control_panel)
+        self.suggestion_browser.setFontFamily("Courier New")
+        self.suggestion_browser.setMinimumHeight(150)
+        self.control_layout.addWidget(self.suggestion_browser)
         
         self.control_layout.addWidget(QLabel("Grid Search Limits:", self.control_panel))
+        grid_layout = QGridLayout()
+        
         self.grid_p_spin = QSpinBox(self.control_panel)
         self.grid_p_spin.setRange(0, 5)
         self.grid_p_spin.setValue(2)
-        self.control_layout.addWidget(QLabel("Max p:", self.control_panel))
-        self.control_layout.addWidget(self.grid_p_spin)
+        grid_layout.addWidget(QLabel("Max p:", self.control_panel), 0, 0)
+        grid_layout.addWidget(self.grid_p_spin, 0, 1)
+        
+        self.grid_q_spin = QSpinBox(self.control_panel)
+        self.grid_q_spin.setRange(0, 5)
+        self.grid_q_spin.setValue(2)
+        grid_layout.addWidget(QLabel("Max q:", self.control_panel), 0, 2)
+        grid_layout.addWidget(self.grid_q_spin, 0, 3)
+        
+        self.grid_P_spin = QSpinBox(self.control_panel)
+        self.grid_P_spin.setRange(0, 2)
+        self.grid_P_spin.setValue(1)
+        grid_layout.addWidget(QLabel("Max P:", self.control_panel), 1, 0)
+        grid_layout.addWidget(self.grid_P_spin, 1, 1)
+        
+        self.grid_Q_spin = QSpinBox(self.control_panel)
+        self.grid_Q_spin.setRange(0, 2)
+        self.grid_Q_spin.setValue(1)
+        grid_layout.addWidget(QLabel("Max Q:", self.control_panel), 1, 2)
+        grid_layout.addWidget(self.grid_Q_spin, 1, 3)
+        
+        self.grid_s_spin = QSpinBox(self.control_panel)
+        self.grid_s_spin.setRange(1, 365)
+        self.grid_s_spin.setValue(12)
+        grid_layout.addWidget(QLabel("Period s:", self.control_panel), 2, 0)
+        grid_layout.addWidget(self.grid_s_spin, 2, 1, 1, 3)
+        
+        self.control_layout.addLayout(grid_layout)
         
         self.run_grid_btn = QPushButton("Run Grid Search", self.control_panel)
+        self.run_grid_btn.setObjectName("primaryButton")
         self.control_layout.addWidget(self.run_grid_btn)
         
         self.progress_bar = QProgressBar(self.control_panel)
@@ -1070,19 +1161,318 @@ class ModelingTab(BaseTab):
         
         self.control_layout.addStretch()
         
-        # Temporary simulation button for Task 0
-        self.sim_btn = QPushButton("[Simulate Model Fit]", self.control_panel)
-        self.sim_btn.setObjectName("primaryButton")
-        self.sim_btn.clicked.connect(self.simulate_fit)
-        self.control_layout.addWidget(self.sim_btn)
+        # Connect signals
+        self.plot_acf_btn.clicked.connect(self.plot_acf_pacf)
+        self.suggest_acf_btn.clicked.connect(self.suggest_model_acf_pacf)
+        self.suggest_spec_btn.clicked.connect(self.suggest_model_spectral)
+        self.run_grid_btn.clicked.connect(self.run_grid_search)
         
-    def simulate_fit(self):
-        # Simulate model fitting
-        self.main_window.state.fitted_model = object()  # Dummy object
-        self.main_window.state.model_order = (1, 0, 1)
-        self.main_window.state.model_params = {"ar": [0.5], "ma": [-0.3], "sigma2": 1.0}
-        self.main_window.state.residuals = np.random.randn(100)
-        self.main_window.update_ui_from_state()
+    def plot_acf_pacf(self):
+        state = self.main_window.state
+        series = state.stationary_series
+        if series is None:
+            QMessageBox.warning(self, "No Data", "Please load and transform the data first.")
+            return
+            
+        nlags = self.lag_spin.value()
+        
+        from axis3_modeling import compute_acf_pacf
+        acf_vals, pacf_vals = compute_acf_pacf(series, nlags)
+        
+        self.acf_vals = acf_vals
+        self.pacf_vals = pacf_vals
+        
+        fig = self.plot_widget.canvas.figure
+        fig.clear()
+        
+        self.acf_ax = fig.add_subplot(121)
+        self.pacf_ax = fig.add_subplot(122)
+        
+        n = len(series.dropna())
+        bound = 1.96 / np.sqrt(n) if n > 0 else 0.2
+        
+        for ax, title, vals in zip([self.acf_ax, self.pacf_ax], ["ACF", "PACF"], [acf_vals, pacf_vals]):
+            ax.tick_params(colors='#1F2937')
+            ax.xaxis.label.set_color('#1F2937')
+            ax.yaxis.label.set_color('#1F2937')
+            ax.title.set_color('#1F2937')
+            
+            lags = range(len(vals))
+            ax.vlines(lags, 0, vals, colors='#2563EB', linewidth=2)
+            ax.plot(lags, vals, 'o', color='#2563EB', markersize=4)
+            
+            ax.axhline(0, color='#1F2937', linewidth=1)
+            ax.axhline(bound, color='#2563EB', linestyle='--', linewidth=1, alpha=0.7)
+            ax.axhline(-bound, color='#2563EB', linestyle='--', linewidth=1, alpha=0.7)
+            ax.fill_between(lags, -bound, bound, color='#2563EB', alpha=0.1)
+            
+            ax.set_title(title)
+            ax.set_xlabel("Lag")
+            ax.set_ylabel("Correlation")
+            ax.set_ylim(-1.05, 1.05)
+            ax.set_xlim(-0.5, len(vals) - 0.5)
+            
+        fig.tight_layout()
+        self.plot_widget.canvas.draw()
+        
+    def on_hover(self, event):
+        if getattr(self, 'acf_vals', None) is None or getattr(self, 'pacf_vals', None) is None:
+            return
+            
+        if event.inaxes is None:
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.hideText()
+            return
+            
+        ax = event.inaxes
+        x = event.xdata
+        y = event.ydata
+        if x is None or y is None:
+            return
+            
+        lag = int(round(x))
+        
+        if ax == getattr(self, 'acf_ax', None) and 0 <= lag < len(self.acf_vals):
+            val = self.acf_vals[lag]
+            text = f"ACF\nLag: {lag}\nValue: {val:.4f}"
+        elif ax == getattr(self, 'pacf_ax', None) and 0 <= lag < len(self.pacf_vals):
+            val = self.pacf_vals[lag]
+            text = f"PACF\nLag: {lag}\nValue: {val:.4f}"
+        else:
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.hideText()
+            return
+            
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QToolTip
+        QToolTip.showText(QCursor.pos(), text, self.plot_widget)
+        
+    def suggest_model_acf_pacf(self):
+        state = self.main_window.state
+        series = state.stationary_series
+        if series is None:
+            QMessageBox.warning(self, "No Data", "Please load and transform the data first.")
+            return
+            
+        if getattr(self, 'acf_vals', None) is None:
+            self.plot_acf_pacf()
+            
+        if getattr(self, 'acf_vals', None) is None:
+            return
+            
+        from axis3_modeling import suggest_model_from_acf_pacf
+        n = len(series.dropna())
+        res = suggest_model_from_acf_pacf(self.acf_vals, self.pacf_vals, n)
+        self.suggestion_browser.setText(res["explanation"])
+        
+    def suggest_model_spectral(self):
+        state = self.main_window.state
+        if not state.stationarity_done:
+            QMessageBox.warning(self, "No Data", "Please load and transform the data first.")
+            return
+            
+        from axis3_modeling import suggest_model_from_spectrum
+        res = suggest_model_from_spectrum(state.detected_cycles, state.seasonal_period_s)
+        self.suggestion_browser.setText(res["explanation"])
+        
+    def get_series_for_fitting(self):
+        state = self.main_window.state
+        if state.original_series is None:
+            return None
+        if state.box_cox_lambda is not None:
+            from axis1_preprocessing import apply_box_cox
+            transformed, _ = apply_box_cox(state.original_series, state.box_cox_lambda)
+            return transformed
+        return state.original_series
+        
+    def run_grid_search(self):
+        state = self.main_window.state
+        if state.stationary_series is None:
+            QMessageBox.warning(self, "No Data", "Please load and transform the data first.")
+            return
+            
+        series = self.get_series_for_fitting()
+        if series is None:
+            QMessageBox.warning(self, "No Data", "No data available for fitting.")
+            return
+            
+        self.run_grid_btn.setEnabled(False)
+        self.grid_p_spin.setEnabled(False)
+        self.grid_q_spin.setEnabled(False)
+        self.grid_P_spin.setEnabled(False)
+        self.grid_Q_spin.setEnabled(False)
+        self.grid_s_spin.setEnabled(False)
+        self.progress_bar.setValue(0)
+        
+        from axis3_modeling import GridSearchWorker
+        self.worker = GridSearchWorker(
+            series=series,
+            max_p=self.grid_p_spin.value(),
+            max_q=self.grid_q_spin.value(),
+            max_P=self.grid_P_spin.value(),
+            max_Q=self.grid_Q_spin.value(),
+            s=self.grid_s_spin.value(),
+            d=state.diff_order_d,
+            D=state.diff_order_D
+        )
+        self.worker.progress.connect(self.progress_bar.setValue)
+        self.worker.finished.connect(self.on_grid_search_finished)
+        self.worker.start()
+        
+    def on_grid_search_finished(self, df):
+        self.run_grid_btn.setEnabled(True)
+        self.grid_p_spin.setEnabled(True)
+        self.grid_q_spin.setEnabled(True)
+        self.grid_P_spin.setEnabled(True)
+        self.grid_Q_spin.setEnabled(True)
+        self.grid_s_spin.setEnabled(True)
+        
+        if df.empty:
+            QMessageBox.critical(self, "Grid Search Failed", "Grid search did not find any valid models.")
+            return
+            
+        self.grid_results = df
+        self.populate_top_10_table(df)
+        
+    def populate_top_10_table(self, df):
+        n_rows = min(len(df), 10)
+        self.model_table.setRowCount(n_rows)
+        self.model_table.setColumnCount(8)
+        self.model_table.setHorizontalHeaderLabels([
+            "Rank", "Model", "AICc", "BIC", "LogLik", "k", "Show Spectrum", "Select Model"
+        ])
+        
+        for i in range(n_rows):
+            row_data = df.iloc[i]
+            
+            self.model_table.setItem(i, 0, QTableWidgetItem(str(int(row_data["Rank"]))))
+            self.model_table.setItem(i, 1, QTableWidgetItem(str(row_data["Model"])))
+            self.model_table.setItem(i, 2, QTableWidgetItem(f"{row_data['AICc']:.4f}"))
+            self.model_table.setItem(i, 3, QTableWidgetItem(f"{row_data['BIC']:.4f}"))
+            self.model_table.setItem(i, 4, QTableWidgetItem(f"{row_data['LogLik']:.4f}"))
+            self.model_table.setItem(i, 5, QTableWidgetItem(str(int(row_data["k"]))))
+            
+            show_spec_btn = QPushButton("Show Spectrum", self)
+            show_spec_btn.clicked.connect(lambda checked=False, r=row_data: self.show_spectrum_for_model(r))
+            self.model_table.setCellWidget(i, 6, show_spec_btn)
+            
+            select_btn = QPushButton("Select", self)
+            select_btn.clicked.connect(lambda checked=False, r=row_data: self.select_model(r))
+            self.model_table.setCellWidget(i, 7, select_btn)
+            
+        self.model_table.resizeColumnsToContents()
+        
+    def select_model(self, row_data):
+        series = self.get_series_for_fitting()
+        if series is None:
+            return
+            
+        p, d, q = int(row_data["p"]), int(row_data["d"]), int(row_data["q"])
+        P, D, Q, s = int(row_data["P"]), int(row_data["D"]), int(row_data["Q"]), int(row_data["s"])
+        
+        is_seasonal = s > 1 and (P > 0 or D > 0 or Q > 0)
+        order = (p, d, q)
+        seasonal_order = (P, D, Q, s) if is_seasonal else None
+        
+        try:
+            from axis3_modeling import fit_model
+            res = fit_model(series, order, seasonal_order)
+            
+            state = self.main_window.state
+            state.fitted_model = res
+            state.model_order = (p, d, q, P, D, Q, s) if is_seasonal else (p, d, q)
+            state.model_params = self.get_model_params_dict(res)
+            state.residuals = res.resid.values
+            state.is_seasonal = is_seasonal
+            
+            self.display_parameters(res)
+            self.main_window.update_ui_from_state()
+            QMessageBox.information(self, "Model Selected", f"Successfully fitted and selected {row_data['Model']}.")
+        except Exception as e:
+            QMessageBox.critical(self, "Fitting Error", f"Failed to fit model: {str(e)}")
+            
+    def show_spectrum_for_model(self, row_data):
+        series = self.get_series_for_fitting()
+        if series is None:
+            return
+            
+        p, d, q = int(row_data["p"]), int(row_data["d"]), int(row_data["q"])
+        P, D, Q, s = int(row_data["P"]), int(row_data["D"]), int(row_data["Q"]), int(row_data["s"])
+        
+        is_seasonal = s > 1 and (P > 0 or D > 0 or Q > 0)
+        order = (p, d, q)
+        seasonal_order = (P, D, Q, s) if is_seasonal else None
+        
+        try:
+            from axis3_modeling import fit_model
+            res = fit_model(series, order, seasonal_order)
+            
+            state = self.main_window.state
+            state.fitted_model = res
+            state.model_order = (p, d, q, P, D, Q, s) if is_seasonal else (p, d, q)
+            state.model_params = self.get_model_params_dict(res)
+            state.residuals = res.resid.values
+            state.is_seasonal = is_seasonal
+            
+            self.display_parameters(res)
+            self.main_window.update_ui_from_state()
+            self.main_window.tab_widget.setCurrentIndex(2)
+        except Exception as e:
+            QMessageBox.critical(self, "Fitting Error", f"Failed to fit model: {str(e)}")
+            
+    def get_model_params_dict(self, res):
+        params_dict = res.params.to_dict()
+        ar_coeffs = []
+        ma_coeffs = []
+        for i in range(1, 20):
+            key = f"ar.L{i}"
+            if key in params_dict:
+                ar_coeffs.append(params_dict[key])
+            else:
+                break
+        for i in range(1, 20):
+            key = f"ma.L{i}"
+            if key in params_dict:
+                ma_coeffs.append(params_dict[key])
+            else:
+                break
+        sigma2 = params_dict.get('sigma2', 1.0)
+        return {
+            "ar": ar_coeffs,
+            "ma": ma_coeffs,
+            "sigma2": sigma2
+        }
+        
+    def display_parameters(self, res):
+        params = res.params
+        bse = res.bse
+        pvalues = res.pvalues
+        tvalues = res.tvalues
+        
+        self.param_table.setRowCount(len(params))
+        self.param_table.setColumnCount(5)
+        self.param_table.setHorizontalHeaderLabels([
+            "Parameter", "Estimate", "Std. Error", "z-value", "p-value"
+        ])
+        
+        for idx, name in enumerate(params.index):
+            val = params[name]
+            se = bse[name] if name in bse else float('nan')
+            z = tvalues[name] if name in tvalues else float('nan')
+            p = pvalues[name] if name in pvalues else float('nan')
+            
+            self.param_table.setItem(idx, 0, QTableWidgetItem(name))
+            self.param_table.setItem(idx, 1, QTableWidgetItem(f"{val:.4f}"))
+            self.param_table.setItem(idx, 2, QTableWidgetItem(f"{se:.4f}" if not np.isnan(se) else "N/A"))
+            self.param_table.setItem(idx, 3, QTableWidgetItem(f"{z:.4f}" if not np.isnan(z) else "N/A"))
+            self.param_table.setItem(idx, 4, QTableWidgetItem(f"{p:.4f}" if not np.isnan(p) else "N/A"))
+            
+        self.param_table.resizeColumnsToContents()
+        
+        sigma2 = res.params.get("sigma2", float('nan'))
+        loglik = res.llf
+        self.sigma2_label.setText(f"Estimated σ̂²: {sigma2:.4f}" if not np.isnan(sigma2) else "Estimated σ̂²: N/A")
+        self.loglik_label.setText(f"Log-Likelihood: {loglik:.4f}")
 
 
 class ValidationTab(BaseTab):
@@ -1237,6 +1627,11 @@ class MainWindow(QMainWindow):
         # Tab 2: Stationarity done
         if self.state.stationarity_done:
             self.indicators[1].set_status('pass')
+            # Synchronize grid search limits s spin box in Tab 4
+            if hasattr(self, 'tabs') and len(self.tabs) > 3:
+                self.tabs[3].grid_s_spin.blockSignals(True)
+                self.tabs[3].grid_s_spin.setValue(self.state.seasonal_period_s)
+                self.tabs[3].grid_s_spin.blockSignals(False)
         else:
             self.indicators[1].set_status('neutral')
             
