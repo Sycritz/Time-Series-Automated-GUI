@@ -1010,12 +1010,20 @@ class SpectralTab(BaseTab):
             return
             
         state = self.main_window.state
-        if state.fitted_model is None or state.model_params is None:
+        
+        # Check preview first, then fall back to fitted model
+        params = None
+        if getattr(state, 'preview_model_params', None) is not None:
+            params = state.preview_model_params
+        elif state.fitted_model is not None and state.model_params is not None:
+            params = state.model_params
+            
+        if params is None:
             return
             
-        ar_coeffs = state.model_params.get("ar", [])
-        ma_coeffs = state.model_params.get("ma", [])
-        sigma2 = state.model_params.get("sigma2", 1.0)
+        ar_coeffs = params.get("ar", [])
+        ma_coeffs = params.get("ma", [])
+        sigma2 = params.get("sigma2", 1.0)
         
         from axis2_spectral import compute_parametric_spectrum
         param_freqs, param_spec = compute_parametric_spectrum(ar_coeffs, ma_coeffs, sigma2, n_points=512)
@@ -1053,9 +1061,16 @@ class ModelingTab(BaseTab):
         top10_container = QWidget(self)
         top10_layout = QVBoxLayout(top10_container)
         top10_layout.setContentsMargins(0, 0, 0, 0)
+        
+        top10_header_layout = QHBoxLayout()
         top10_label = QLabel("Top 10 Candidate Models", self)
         top10_label.setStyleSheet("font-weight: bold; color: #1F2937;")
-        top10_layout.addWidget(top10_label)
+        top10_header_layout.addWidget(top10_label)
+        top10_header_layout.addStretch()
+        self.export_models_btn = QPushButton("Export CSV", self)
+        self.export_models_btn.setEnabled(False)
+        top10_header_layout.addWidget(self.export_models_btn)
+        top10_layout.addLayout(top10_header_layout)
         
         self.model_table = QTableWidget(self)
         self.model_table.setColumnCount(8)
@@ -1069,9 +1084,16 @@ class ModelingTab(BaseTab):
         param_container = QWidget(self)
         param_layout = QVBoxLayout(param_container)
         param_layout.setContentsMargins(0, 0, 0, 0)
+        
+        param_header_layout = QHBoxLayout()
         param_label = QLabel("Fitted Model Parameters", self)
         param_label.setStyleSheet("font-weight: bold; color: #1F2937;")
-        param_layout.addWidget(param_label)
+        param_header_layout.addWidget(param_label)
+        param_header_layout.addStretch()
+        self.export_params_btn = QPushButton("Export CSV", self)
+        self.export_params_btn.setEnabled(False)
+        param_header_layout.addWidget(self.export_params_btn)
+        param_layout.addLayout(param_header_layout)
         
         self.param_table = QTableWidget(self)
         self.param_table.setColumnCount(5)
@@ -1166,6 +1188,8 @@ class ModelingTab(BaseTab):
         self.suggest_acf_btn.clicked.connect(self.suggest_model_acf_pacf)
         self.suggest_spec_btn.clicked.connect(self.suggest_model_spectral)
         self.run_grid_btn.clicked.connect(self.run_grid_search)
+        self.export_models_btn.clicked.connect(self.export_models_csv)
+        self.export_params_btn.clicked.connect(self.export_params_csv)
         
     def plot_acf_pacf(self):
         state = self.main_window.state
@@ -1329,9 +1353,11 @@ class ModelingTab(BaseTab):
         
         if df.empty:
             QMessageBox.critical(self, "Grid Search Failed", "Grid search did not find any valid models.")
+            self.export_models_btn.setEnabled(False)
             return
             
         self.grid_results = df
+        self.export_models_btn.setEnabled(True)
         self.populate_top_10_table(df)
         
     def populate_top_10_table(self, df):
@@ -1379,6 +1405,7 @@ class ModelingTab(BaseTab):
             res = fit_model(series, order, seasonal_order)
             
             state = self.main_window.state
+            state.preview_model_params = None  # Clear preview when selecting a model
             state.fitted_model = res
             state.model_order = (p, d, q, P, D, Q, s) if is_seasonal else (p, d, q)
             state.model_params = self.get_model_params_dict(res)
@@ -1408,15 +1435,10 @@ class ModelingTab(BaseTab):
             res = fit_model(series, order, seasonal_order)
             
             state = self.main_window.state
-            state.fitted_model = res
-            state.model_order = (p, d, q, P, D, Q, s) if is_seasonal else (p, d, q)
-            state.model_params = self.get_model_params_dict(res)
-            state.residuals = res.resid.values
-            state.is_seasonal = is_seasonal
+            state.preview_model_params = self.get_model_params_dict(res)
             
-            self.display_parameters(res)
-            self.main_window.update_ui_from_state()
             self.main_window.tab_widget.setCurrentIndex(2)
+            self.main_window.tabs[2].update_parametric_spectrum_overlay()
         except Exception as e:
             QMessageBox.critical(self, "Fitting Error", f"Failed to fit model: {str(e)}")
             
@@ -1455,6 +1477,7 @@ class ModelingTab(BaseTab):
             "Parameter", "Estimate", "Std. Error", "z-value", "p-value"
         ])
         
+        rows = []
         for idx, name in enumerate(params.index):
             val = params[name]
             se = bse[name] if name in bse else float('nan')
@@ -1467,12 +1490,50 @@ class ModelingTab(BaseTab):
             self.param_table.setItem(idx, 3, QTableWidgetItem(f"{z:.4f}" if not np.isnan(z) else "N/A"))
             self.param_table.setItem(idx, 4, QTableWidgetItem(f"{p:.4f}" if not np.isnan(p) else "N/A"))
             
+            rows.append({
+                "Parameter": name,
+                "Estimate": val,
+                "Std. Error": se,
+                "z-value": z,
+                "p-value": p
+            })
+            
+        self.fitted_params_df = pd.DataFrame(rows)
+        self.export_params_btn.setEnabled(True)
         self.param_table.resizeColumnsToContents()
         
         sigma2 = res.params.get("sigma2", float('nan'))
         loglik = res.llf
         self.sigma2_label.setText(f"Estimated σ̂²: {sigma2:.4f}" if not np.isnan(sigma2) else "Estimated σ̂²: N/A")
         self.loglik_label.setText(f"Log-Likelihood: {loglik:.4f}")
+
+    def export_models_csv(self):
+        if getattr(self, 'grid_results', None) is None or self.grid_results.empty:
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Grid Search Results to CSV", "", "CSV Files (*.csv)"
+        )
+        if file_path:
+            if not file_path.lower().endswith(".csv"):
+                file_path += ".csv"
+            try:
+                self.grid_results.to_csv(file_path, index=False)
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export models: {str(e)}")
+
+    def export_params_csv(self):
+        if getattr(self, 'fitted_params_df', None) is None or self.fitted_params_df.empty:
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Model Parameters to CSV", "", "CSV Files (*.csv)"
+        )
+        if file_path:
+            if not file_path.lower().endswith(".csv"):
+                file_path += ".csv"
+            try:
+                self.fitted_params_df.to_csv(file_path, index=False)
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export parameters: {str(e)}")
 
 
 class ValidationTab(BaseTab):
@@ -1668,6 +1729,17 @@ class MainWindow(QMainWindow):
         # Update tab 3 parametric overlay if model is fitted
         if hasattr(self, 'tabs') and len(self.tabs) > 2:
             self.tabs[2].update_parametric_spectrum_overlay()
+
+    def closeEvent(self, event):
+        try:
+            # Safely terminate GridSearchWorker if running on exit
+            modeling_tab = self.tabs[3]
+            if hasattr(modeling_tab, 'worker') and modeling_tab.worker and modeling_tab.worker.isRunning():
+                modeling_tab.worker.terminate()
+                modeling_tab.worker.wait()
+        except Exception:
+            pass
+        event.accept()
 
 
 if __name__ == "__main__":

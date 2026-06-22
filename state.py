@@ -27,6 +27,7 @@ class AnalysisState:
     model_params: dict | None = None    # {"ar": [...], "ma": [...], "sigma2": float}
     residuals: np.ndarray | None = None
     is_seasonal: bool = False
+    preview_model_params: dict | None = None
 
     # Tab 5 outputs
     _validation_passed: bool = False
@@ -49,6 +50,7 @@ class AnalysisState:
         self._fitted_model = None
         self.model_order = None
         self.model_params = None
+        self.preview_model_params = None
         self.residuals = None
         self.is_seasonal = False
         self._validation_passed = False
@@ -65,6 +67,7 @@ class AnalysisState:
         self._fitted_model = None
         self.model_order = None
         self.model_params = None
+        self.preview_model_params = None
         self.residuals = None
         self.is_seasonal = False
         self._validation_passed = False
