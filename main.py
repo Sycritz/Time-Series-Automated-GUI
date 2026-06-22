@@ -1612,9 +1612,13 @@ class ValidationTab(BaseTab):
         
         # Decide Verdict
         lb_lag = self.lb_lag_spin.value()
-        lb_lag_actual = min(lb_lag, len(results['lb_pvalues']))
+        h_max = results.get('h_max', 20)
+        lb_lag_actual = min(lb_lag, h_max) if h_max > 0 else 0
         
-        lb_pvalue = results['lb_pvalues'][lb_lag_actual - 1]
+        if lb_lag_actual > 0:
+            lb_pvalue = results['lb_pvalues'][lb_lag_actual - 1]
+        else:
+            lb_pvalue = np.nan
         
         if np.isnan(lb_pvalue):
             lb_pass = True

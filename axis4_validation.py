@@ -64,7 +64,8 @@ def compute_residual_spectrum(residuals: np.ndarray, window: str, M: int) -> tup
         return freqs, zero_arr, zero_arr, zero_arr
 
     # Standardize residuals
-    std_res = res / np.std(res)
+    res_std = np.std(res)
+    std_res = res / res_std if res_std > 1e-10 else res
     series = pd.Series(std_res)
     
     # Reuse smooth_spectrum
@@ -140,6 +141,7 @@ def run_all_diagnostics(residuals: np.ndarray, p: int, q: int) -> dict:
         'lb_pvalues': lb_pvalues,
         'lb_p_value_20': lb_p_value_20,
         'lb_pass': lb_pass,
+        'h_max': h_max,
         'jb_stat': jb_stat,
         'jb_pvalue': jb_pvalue,
         'jb_pass': jb_pass,
