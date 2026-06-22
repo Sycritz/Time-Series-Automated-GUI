@@ -17,7 +17,7 @@ def test_gui_spectral_workflow():
     window = MainWindow()
     
     # 1. Load the airline passengers CSV file (from Tab 1 helper steps)
-    csv_path = os.path.join(os.path.dirname(__file__), "datasets", "international-airline-passengers.csv")
+    csv_path = os.path.join(os.path.dirname(__file__), "..", "datasets", "international-airline-passengers.csv")
     tab1 = window.tabs[0]
     from axis1_preprocessing import load_csv
     tab1.df = load_csv(csv_path)

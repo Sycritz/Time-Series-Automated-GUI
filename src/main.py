@@ -936,6 +936,9 @@ class SpectralTab(BaseTab):
             
     def plot_spectrum(self):
         if self.raw_freqs is None:
+            if self.main_window.state.stationary_series is not None:
+                self.estimate_spectrum()
+                return
             return
             
         fig = self.plot_widget.canvas.figure
@@ -1880,9 +1883,17 @@ class ForecastingTab(BaseTab):
     def on_generate_clicked(self):
         state = self.main_window.state
         if not state.model_fitted or state.fitted_model is None:
-            QMessageBox.warning(self, "No Model", "No fitted model found. Please fit and validate a model first on Tab 4 and 5.")
+            QMessageBox.warning(self, "No Model", "No fitted model found. Please fit a model first on Tab 4.")
             return
-            
+
+        # Warn if validation was run and failed, but still allow forecasting
+        if state.validation_run and not state.validation_passed:
+            QMessageBox.warning(
+                self, "Model Not Validated",
+                "⚠️ This model failed one or more adequacy tests.\n"
+                "Forecasts may be unreliable — interpret prediction intervals with caution."
+            )
+
         h = self.horizon_spin.value()
         try:
             from axis5_forecasting import generate_forecasts, back_transform, generate_spectral_insight
@@ -2111,7 +2122,7 @@ class MainWindow(QMainWindow):
         tab3_enabled = self.state.stationarity_done
         tab4_enabled = self.state.stationarity_done
         tab5_enabled = self.state.model_fitted
-        tab6_enabled = self.state.validation_passed
+        tab6_enabled = self.state.model_fitted  # ponytail: allow forecast for any fitted model; warning shown if not validated
         
         # Set tab enabled states (Tab 1 is index 0, always enabled)
         self.tab_widget.setTabEnabled(1, tab2_enabled)
@@ -2165,6 +2176,8 @@ class MainWindow(QMainWindow):
         # Tab 6: Forecasts enabled/completed
         if self.state.validation_passed:
             self.indicators[5].set_status('pass')
+        elif self.state.model_fitted and self.state.validation_run:
+            self.indicators[5].set_status('fail')  # model fitted but failed validation
         else:
             self.indicators[5].set_status('neutral')
             

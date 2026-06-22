@@ -21,7 +21,7 @@ def test_gui_workflow():
     assert window.state.stationarity_done is False
     
     # 2. Simulate loading the airline passengers CSV file
-    csv_path = os.path.join(os.path.dirname(__file__), "datasets", "international-airline-passengers.csv")
+    csv_path = os.path.join(os.path.dirname(__file__), "..", "datasets", "international-airline-passengers.csv")
     print(f"Loading test file: {csv_path}")
     
     tab1 = window.tabs[0]
