@@ -1827,10 +1827,33 @@ class ForecastingTab(BaseTab):
         super().__init__("Generate & View Forecasts", parent)
         self.main_window = main_window
         
-        self.plot_widget = PlotWidget(self)
-        self.right_layout.addWidget(self.plot_widget)
+        self.stationary_forecasts = None
+        self.back_transformed_forecasts = None
+        self.current_forecasts = None
         
-        # Add placeholders for Forecasting Controls
+        # Upper Right: Plot
+        self.plot_widget = PlotWidget(self)
+        self.right_layout.addWidget(self.plot_widget, 6)
+        
+        # Lower Right: Table and Export
+        from PySide6.QtWidgets import QHeaderView
+        self.table_widget = QTableWidget(self)
+        self.table_widget.setColumnCount(9)
+        self.table_widget.setHorizontalHeaderLabels([
+            "Step", "Date", "Point Forecast",
+            "Lower 50% PI", "Upper 50% PI",
+            "Lower 80% PI", "Upper 80% PI",
+            "Lower 95% PI", "Upper 95% PI"
+        ])
+        self.table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.right_layout.addWidget(self.table_widget, 4)
+        
+        self.export_csv_btn = QPushButton("Export Table to CSV", self)
+        self.export_csv_btn.setObjectName("secondaryButton")
+        self.export_csv_btn.clicked.connect(self.export_csv)
+        self.right_layout.addWidget(self.export_csv_btn)
+        
+        # Add Forecasting Controls to Left Panel
         self.control_layout.addWidget(QLabel("Forecast Horizon h:", self.control_panel))
         self.horizon_spin = QSpinBox(self.control_panel)
         self.horizon_spin.setRange(1, 100)
@@ -1839,17 +1862,197 @@ class ForecastingTab(BaseTab):
         
         self.scale_combo = QComboBox(self.control_panel)
         self.scale_combo.addItems(["Original Scale", "Transformed Scale"])
+        self.scale_combo.currentIndexChanged.connect(self.update_view)
         self.control_layout.addWidget(self.scale_combo)
         
         self.generate_btn = QPushButton("Generate Forecast", self.control_panel)
         self.generate_btn.setObjectName("primaryButton")
+        self.generate_btn.clicked.connect(self.on_generate_clicked)
         self.control_layout.addWidget(self.generate_btn)
         
         self.control_layout.addWidget(QLabel("Spectral Insight:", self.control_panel))
         self.insight_browser = QTextBrowser(self.control_panel)
+        self.insight_browser.setMinimumHeight(200)
         self.control_layout.addWidget(self.insight_browser)
         
         self.control_layout.addStretch()
+
+    def on_generate_clicked(self):
+        state = self.main_window.state
+        if not state.model_fitted or state.fitted_model is None:
+            QMessageBox.warning(self, "No Model", "No fitted model found. Please fit and validate a model first on Tab 4 and 5.")
+            return
+            
+        h = self.horizon_spin.value()
+        try:
+            from axis5_forecasting import generate_forecasts, back_transform, generate_spectral_insight
+            
+            # Generate forecasts on transformed scale
+            self.stationary_forecasts = generate_forecasts(state.fitted_model, h, state)
+            
+            # Back-transform to original scale
+            self.back_transformed_forecasts = back_transform(
+                self.stationary_forecasts, state.transformations, state.original_series
+            )
+            
+            # Update the spectral insight panel
+            insight_text = generate_spectral_insight(state)
+            self.insight_browser.setMarkdown(insight_text)
+            
+            # Update plots and table
+            self.update_view()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Forecasting Error", f"Failed to generate forecasts: {str(e)}")
+
+    def update_view(self):
+        if not hasattr(self, 'stationary_forecasts') or self.stationary_forecasts is None:
+            return
+            
+        state = self.main_window.state
+        scale = self.scale_combo.currentText()
+        
+        if scale == "Original Scale":
+            forecasts = self.back_transformed_forecasts
+            history = state.original_series
+            scale_label = "Original Scale"
+        else:
+            forecasts = self.stationary_forecasts
+            history = state.stationary_series
+            scale_label = "Transformed Scale"
+            
+        self.current_forecasts = forecasts
+        
+        # 1. Update plot
+        ax = self.plot_widget.canvas.axes
+        ax.clear()
+        
+        # Plot last 30-50 historical values for context
+        history_len = min(50, len(history))
+        history_series = history.iloc[-history_len:]
+        
+        # Connect history and forecast by prepending last history value
+        plot_dates = [history_series.index[-1]] + list(forecasts["dates"])
+        
+        plot_point = np.concatenate([[history_series.iloc[-1]], forecasts["point"]])
+        plot_lower_50 = np.concatenate([[history_series.iloc[-1]], forecasts["lower_50"]])
+        plot_upper_50 = np.concatenate([[history_series.iloc[-1]], forecasts["upper_50"]])
+        plot_lower_80 = np.concatenate([[history_series.iloc[-1]], forecasts["lower_80"]])
+        plot_upper_80 = np.concatenate([[history_series.iloc[-1]], forecasts["upper_80"]])
+        plot_lower_95 = np.concatenate([[history_series.iloc[-1]], forecasts["lower_95"]])
+        plot_upper_95 = np.concatenate([[history_series.iloc[-1]], forecasts["upper_95"]])
+        
+        # Plot history
+        ax.plot(history_series.index, history_series.values, color='#4B5563', label='History', linewidth=1.5)
+        
+        # Plot point forecast
+        ax.plot(plot_dates, plot_point, color='#2563EB', label='Forecast', linewidth=2.0)
+        
+        # Plot prediction intervals (fan chart)
+        ax.fill_between(plot_dates, plot_lower_50, plot_upper_50, color='#2563EB', alpha=0.4, label='50% PI')
+        ax.fill_between(plot_dates, plot_lower_80, plot_upper_80, color='#2563EB', alpha=0.25, label='80% PI')
+        ax.fill_between(plot_dates, plot_lower_95, plot_upper_95, color='#2563EB', alpha=0.1, label='95% PI')
+        
+        ax.set_title(f"Forecast Horizon h={len(forecasts['point'])} ({scale_label})", color='#1F2937', fontsize=12, fontweight='bold')
+        ax.set_xlabel("Time", color='#1F2937')
+        ax.set_ylabel("Value", color='#1F2937')
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.legend(loc='best')
+        
+        # Rotate dates for better readability if DatetimeIndex
+        if isinstance(history.index, pd.DatetimeIndex):
+            self.plot_widget.canvas.figure.autofmt_xdate()
+            
+        self.plot_widget.canvas.draw()
+        
+        # 2. Update table
+        h = len(forecasts["point"])
+        self.table_widget.setRowCount(h)
+        for idx in range(h):
+            # Step
+            step_item = QTableWidgetItem(str(forecasts["steps"][idx]))
+            step_item.setFlags(step_item.flags() & ~Qt.ItemIsEditable)
+            self.table_widget.setItem(idx, 0, step_item)
+            
+            # Date
+            date_val = forecasts["dates"][idx]
+            if isinstance(date_val, pd.Timestamp):
+                date_str = date_val.strftime('%Y-%m-%d')
+            else:
+                date_str = str(date_val)
+            date_item = QTableWidgetItem(date_str)
+            date_item.setFlags(date_item.flags() & ~Qt.ItemIsEditable)
+            self.table_widget.setItem(idx, 1, date_item)
+            
+            # Point
+            point_item = QTableWidgetItem(f"{forecasts['point'][idx]:.4f}")
+            point_item.setFlags(point_item.flags() & ~Qt.ItemIsEditable)
+            self.table_widget.setItem(idx, 2, point_item)
+            
+            # 50% PI
+            l50 = QTableWidgetItem(f"{forecasts['lower_50'][idx]:.4f}")
+            l50.setFlags(l50.flags() & ~Qt.ItemIsEditable)
+            self.table_widget.setItem(idx, 3, l50)
+            
+            u50 = QTableWidgetItem(f"{forecasts['upper_50'][idx]:.4f}")
+            u50.setFlags(u50.flags() & ~Qt.ItemIsEditable)
+            self.table_widget.setItem(idx, 4, u50)
+            
+            # 80% PI
+            l80 = QTableWidgetItem(f"{forecasts['lower_80'][idx]:.4f}")
+            l80.setFlags(l80.flags() & ~Qt.ItemIsEditable)
+            self.table_widget.setItem(idx, 5, l80)
+            
+            u80 = QTableWidgetItem(f"{forecasts['upper_80'][idx]:.4f}")
+            u80.setFlags(u80.flags() & ~Qt.ItemIsEditable)
+            self.table_widget.setItem(idx, 6, u80)
+            
+            # 95% PI
+            l95 = QTableWidgetItem(f"{forecasts['lower_95'][idx]:.4f}")
+            l95.setFlags(l95.flags() & ~Qt.ItemIsEditable)
+            self.table_widget.setItem(idx, 7, l95)
+            
+            u95 = QTableWidgetItem(f"{forecasts['upper_95'][idx]:.4f}")
+            u95.setFlags(u95.flags() & ~Qt.ItemIsEditable)
+            self.table_widget.setItem(idx, 8, u95)
+
+    def export_csv(self):
+        if not hasattr(self, 'current_forecasts') or self.current_forecasts is None:
+            QMessageBox.warning(self, "No Forecasts", "Please generate forecasts first.")
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Forecasts to CSV", "", "CSV Files (*.csv)"
+        )
+        if file_path:
+            if not file_path.lower().endswith(".csv"):
+                file_path += ".csv"
+                
+            forecasts = self.current_forecasts
+            date_strings = []
+            for d in forecasts["dates"]:
+                if isinstance(d, pd.Timestamp):
+                    date_strings.append(d.strftime('%Y-%m-%d'))
+                else:
+                    date_strings.append(str(d))
+                    
+            df = pd.DataFrame({
+                "Step": forecasts["steps"],
+                "Date": date_strings,
+                "Point_Forecast": forecasts["point"],
+                "Lower_50_PI": forecasts["lower_50"],
+                "Upper_50_PI": forecasts["upper_50"],
+                "Lower_80_PI": forecasts["lower_80"],
+                "Upper_80_PI": forecasts["upper_80"],
+                "Lower_95_PI": forecasts["lower_95"],
+                "Upper_95_PI": forecasts["upper_95"]
+            })
+            
+            try:
+                df.to_csv(file_path, index=False)
+                QMessageBox.information(self, "Export Successful", f"Forecasts successfully exported to {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export CSV: {str(e)}")
 
 
 class MainWindow(QMainWindow):
