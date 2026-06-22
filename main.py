@@ -1594,7 +1594,8 @@ class ValidationTab(BaseTab):
         Q_val = order[5] if len(order) == 7 else 0
         
         # Standardize residuals
-        std_residuals = residuals / np.std(residuals)
+        res_std = np.std(residuals)
+        std_residuals = residuals / res_std if res_std > 1e-10 else residuals
         
         # Calculate diagnostics
         try:
