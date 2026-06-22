@@ -1541,10 +1541,14 @@ class ValidationTab(BaseTab):
         super().__init__("Model Validation & Residual Diagnostics", parent)
         self.main_window = main_window
         
+        # Right side: two plot widgets (Top: 2x3 grid, Bottom: 1x2 grid for Ljung-Box and Residual Spectrum)
         self.plot_widget = PlotWidget(self)
-        self.right_layout.addWidget(self.plot_widget)
+        self.bottom_plot_widget = PlotWidget(self)
         
-        # Add placeholders for Validation Controls
+        self.right_layout.addWidget(self.plot_widget, 6)
+        self.right_layout.addWidget(self.bottom_plot_widget, 4)
+        
+        # Left Panel (Controls)
         self.control_layout.addWidget(QLabel("Ljung-Box Lags:", self.control_panel))
         self.lb_lag_spin = QSpinBox(self.control_panel)
         self.lb_lag_spin.setRange(1, 40)
@@ -1552,35 +1556,265 @@ class ValidationTab(BaseTab):
         self.control_layout.addWidget(self.lb_lag_spin)
         
         self.run_tests_btn = QPushButton("Run Diagnostics", self.control_panel)
+        self.run_tests_btn.setObjectName("primaryButton")
+        self.run_tests_btn.clicked.connect(self.run_diagnostics)
         self.control_layout.addWidget(self.run_tests_btn)
         
-        self.verdict_label = QLabel("Verdict: NOT COMPLETED", self.control_panel)
+        self.control_layout.addWidget(QLabel("", self.control_panel)) # spacing
+        
+        self.verdict_label = QLabel("Verdict Summary:", self.control_panel)
         self.verdict_label.setObjectName("sectionHeading")
         self.control_layout.addWidget(self.verdict_label)
         
+        # Monospaced text browser for final verdict
+        self.verdict_browser = QTextBrowser(self.control_panel)
+        from PySide6.QtGui import QFontDatabase
+        mono_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        mono_font.setPointSize(9)
+        self.verdict_browser.setFont(mono_font)
+        self.verdict_browser.setReadOnly(True)
+        self.control_layout.addWidget(self.verdict_browser)
+        
         self.control_layout.addStretch()
         
-        # Temporary simulation buttons for Task 0 (Pass/Fail)
-        self.sim_pass_btn = QPushButton("[Simulate Pass Verdict]", self.control_panel)
-        self.sim_pass_btn.setObjectName("primaryButton")
-        self.sim_pass_btn.clicked.connect(self.simulate_pass)
-        self.control_layout.addWidget(self.sim_pass_btn)
+    def run_diagnostics(self):
+        state = self.main_window.state
+        if not state.model_fitted or state.residuals is None:
+            QMessageBox.warning(self, "No Fitted Model", "Please fit and select a model first on Tab 4.")
+            return
+            
+        residuals = state.residuals
+        order = state.model_order
         
-        self.sim_fail_btn = QPushButton("[Simulate Fail Verdict]", self.control_panel)
-        self.sim_fail_btn.clicked.connect(self.simulate_fail)
-        self.control_layout.addWidget(self.sim_fail_btn)
+        # Standard Box-Jenkins: number of estimated parameters (excluding constant/variance)
+        # order is (p, d, q) or (p, d, q, P, D, Q, s)
+        p_val = order[0]
+        q_val = order[2]
+        P_val = order[3] if len(order) == 7 else 0
+        Q_val = order[5] if len(order) == 7 else 0
         
-    def simulate_pass(self):
-        # Simulate validation passing
-        self.main_window.state.validation_passed = True
+        # Standardize residuals
+        std_residuals = residuals / np.std(residuals)
+        
+        # Calculate diagnostics
+        try:
+            from axis4_validation import run_all_diagnostics
+            results = run_all_diagnostics(residuals, p_val + P_val, q_val + Q_val)
+        except Exception as e:
+            QMessageBox.critical(self, "Diagnostic Error", f"Failed to run diagnostics: {str(e)}")
+            return
+            
+        # Draw Top 2x3 Plot Grid
+        self.draw_top_plots(residuals, std_residuals, results)
+        
+        # Draw Bottom 1x2 Plot Grid
+        self.draw_bottom_plots(std_residuals, results)
+        
+        # Decide Verdict
+        lb_lag = self.lb_lag_spin.value()
+        lb_lag_actual = min(lb_lag, len(results['lb_pvalues']))
+        
+        lb_pvalue = results['lb_pvalues'][lb_lag_actual - 1]
+        
+        if np.isnan(lb_pvalue):
+            lb_pass = True
+            lb_status_str = "PASS"
+        else:
+            lb_pass = bool(lb_pvalue >= 0.05)
+            lb_status_str = "PASS" if lb_pass else "FAIL"
+            
+        jb_pvalue = results['jb_pvalue']
+        jb_pass = bool(results['jb_pass'])
+        jb_status_str = "PASS" if jb_pass else "FAIL"
+        
+        cp_pass = bool(results['cp_pass'])
+        cp_status_str = "PASS" if cp_pass else "FAIL"
+        
+        # Overall verdict
+        all_passed = bool(lb_pass and jb_pass and cp_pass)
+        state.validation_passed = all_passed
+        
+        # Update UI state and enabled tabs
         self.main_window.update_ui_from_state()
-        self.verdict_label.setText("Verdict: PASS")
         
-    def simulate_fail(self):
-        # Simulate validation failing
-        self.main_window.state.validation_passed = False
-        self.main_window.update_ui_from_state()
-        self.verdict_label.setText("Verdict: FAIL")
+        # Format verdict text
+        verdict_status = "ADEQUATE" if all_passed else "INADEQUATE"
+        
+        if all_passed:
+            verdict_details = "Residuals are consistent with Gaussian White Noise.\nProceed to Forecasting (Tab 6)."
+        else:
+            verdict_details = "Return to Tab 4 (Model Identification) and\nconsider alternative specifications."
+            
+        summary_text = (
+            "===== MODEL VALIDATION SUMMARY =====\n"
+            f"Ljung-Box Test (h={lb_lag_actual}):\n"
+            f"p-value = {f'{lb_pvalue:.4f}' if not np.isnan(lb_pvalue) else 'NaN'}\n"
+            f"[{lb_status_str}]\n\n"
+            "Jarque-Bera Test:\n"
+            f"p-value = {jb_pvalue:.4f}\n"
+            f"[{jb_status_str}]\n\n"
+            "Cum. Periodogram Test:\n"
+            f"[{cp_status_str}]\n"
+            "---------------------\n"
+            f"VERDICT: MODEL IS {verdict_status}.\n"
+            f"{verdict_details}"
+        )
+        
+        self.verdict_browser.setText(summary_text)
+        
+    def draw_top_plots(self, residuals, std_residuals, results):
+        fig = self.plot_widget.canvas.figure
+        fig.clear()
+        
+        # 2x3 Subplots
+        axs = fig.subplots(2, 3)
+        
+        # Theme colors
+        text_color = '#1F2937'
+        accent_color = '#2563EB'
+        fail_color = '#DC2626'
+        
+        # Plot 1: Standardized residuals vs time
+        ax = axs[0, 0]
+        time_idx = self.main_window.state.time_index
+        if time_idx is not None and len(time_idx) == len(std_residuals):
+            ax.plot(time_idx, std_residuals, color=text_color, linewidth=1)
+        else:
+            ax.plot(np.arange(len(std_residuals)), std_residuals, color=text_color, linewidth=1)
+        ax.axhline(0, color='gray', linestyle='-')
+        ax.axhline(1.96, color=fail_color, linestyle='--')
+        ax.axhline(-1.96, color=fail_color, linestyle='--')
+        ax.set_title("Standardized Residuals")
+        ax.tick_params(colors=text_color)
+        
+        # Plot 2: ACF of residuals
+        ax = axs[0, 1]
+        from statsmodels.tsa.stattools import acf
+        n_res = len(std_residuals)
+        nlags = min(20, n_res // 2 - 1)
+        if nlags < 1:
+            nlags = 1
+        acf_vals = acf(std_residuals, nlags=nlags)
+        lags = np.arange(len(acf_vals))
+        ax.vlines(lags, 0, acf_vals, colors=accent_color, linewidth=2)
+        ax.plot(lags, acf_vals, 'o', color=accent_color, markersize=4)
+        ax.axhline(0, color=text_color, linewidth=1)
+        bound = 1.96 / np.sqrt(n_res)
+        ax.axhline(bound, color=fail_color, linestyle='--', linewidth=1)
+        ax.axhline(-bound, color=fail_color, linestyle='--', linewidth=1)
+        ax.fill_between(lags, -bound, bound, color=accent_color, alpha=0.1)
+        ax.set_title("ACF of Residuals")
+        ax.set_ylim(-1.05, 1.05)
+        ax.tick_params(colors=text_color)
+        
+        # Plot 3: PACF of residuals
+        ax = axs[0, 2]
+        from statsmodels.tsa.stattools import pacf
+        try:
+            pacf_vals = pacf(std_residuals, nlags=nlags, method='ywm')
+        except Exception:
+            pacf_vals = pacf(std_residuals, nlags=nlags)
+        lags = np.arange(len(pacf_vals))
+        ax.vlines(lags, 0, pacf_vals, colors=accent_color, linewidth=2)
+        ax.plot(lags, pacf_vals, 'o', color=accent_color, markersize=4)
+        ax.axhline(0, color=text_color, linewidth=1)
+        ax.axhline(bound, color=fail_color, linestyle='--', linewidth=1)
+        ax.axhline(-bound, color=fail_color, linestyle='--', linewidth=1)
+        ax.fill_between(lags, -bound, bound, color=accent_color, alpha=0.1)
+        ax.set_title("PACF of Residuals")
+        ax.set_ylim(-1.05, 1.05)
+        ax.tick_params(colors=text_color)
+        
+        # Plot 4: QQ-plot
+        ax = axs[1, 0]
+        import scipy.stats as stats
+        stats.probplot(std_residuals, plot=ax)
+        ax.get_lines()[0].set_markerfacecolor(accent_color)
+        ax.get_lines()[0].set_markeredgecolor(accent_color)
+        ax.get_lines()[1].set_color(fail_color)
+        ax.set_title("Normal Q-Q Plot")
+        ax.tick_params(colors=text_color)
+        
+        # Plot 5: Histogram + KDE
+        ax = axs[1, 1]
+        ax.hist(std_residuals, bins='auto', density=True, alpha=0.5, facecolor='#F5F6F8', edgecolor='#D1D5DB')
+        x_grid = np.linspace(-4, 4, 200)
+        ax.plot(x_grid, stats.norm.pdf(x_grid, 0, 1), linestyle='--', color=fail_color, label='N(0,1)')
+        try:
+            from scipy.stats import gaussian_kde
+            kde = gaussian_kde(std_residuals)
+            ax.plot(x_grid, kde(x_grid), color=accent_color, label='KDE')
+        except Exception:
+            pass
+        ax.set_title("Residual Histogram")
+        ax.legend(prop={'size': 7})
+        ax.tick_params(colors=text_color)
+        
+        # Plot 6: Cumulative Periodogram + KS bounds
+        ax = axs[1, 2]
+        cp_freqs = results['cp_frequencies']
+        C_omega = results['cp_C_omega']
+        ks_up = results['cp_ks_upper']
+        ks_lo = results['cp_ks_lower']
+        if len(C_omega) > 0:
+            ax.plot(cp_freqs, C_omega, color=accent_color, label='C(ω)')
+            ax.plot([0, cp_freqs[-1]], [0, 1.0], color='gray', linestyle='-')
+            ax.plot(cp_freqs, ks_up, color=fail_color, linestyle='--', label='95% KS Bound')
+            ax.plot(cp_freqs, ks_lo, color=fail_color, linestyle='--')
+            ax.set_ylim(-0.05, 1.05)
+            ax.legend(prop={'size': 7})
+        ax.set_title("Cumulative Periodogram")
+        ax.tick_params(colors=text_color)
+        
+        fig.tight_layout()
+        self.plot_widget.canvas.draw()
+        
+    def draw_bottom_plots(self, std_residuals, results):
+        fig = self.bottom_plot_widget.canvas.figure
+        fig.clear()
+        
+        axs = fig.subplots(1, 2)
+        text_color = '#1F2937'
+        accent_color = '#2563EB'
+        fail_color = '#DC2626'
+        
+        # Plot 1: Ljung-Box p-values
+        ax = axs[0]
+        lb_pvals = results['lb_pvalues']
+        lags = np.arange(1, len(lb_pvals) + 1)
+        valid_indices = ~np.isnan(lb_pvals)
+        if np.any(valid_indices):
+            colors = [accent_color if p >= 0.05 else fail_color for p in lb_pvals[valid_indices]]
+            ax.bar(lags[valid_indices], lb_pvals[valid_indices], color=colors, alpha=0.8, edgecolor='#D1D5DB')
+        ax.axhline(0.05, color=fail_color, linestyle='--', label='5% Level')
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_xlabel("Lag h")
+        ax.set_ylabel("p-value")
+        ax.set_title("Ljung-Box p-values")
+        ax.legend(prop={'size': 8})
+        ax.tick_params(colors=text_color)
+        
+        # Plot 2: Residual Spectral Density Flatness Check
+        ax = axs[1]
+        sp_freqs = results['sp_frequencies']
+        f_hat = results['sp_f_hat']
+        sp_lo = results['sp_ci_lower']
+        sp_up = results['sp_ci_upper']
+        
+        if len(f_hat) > 0:
+            ax.plot(sp_freqs, f_hat, color=accent_color, label='f̂_Z(λ)')
+            ax.fill_between(sp_freqs, sp_lo, sp_up, color=accent_color, alpha=0.15, label='95% CI')
+            flat_level = 1.0 / (2.0 * np.pi)
+            ax.axhline(flat_level, color=fail_color, linestyle='--', label='1/(2π)')
+            ax.legend(prop={'size': 8})
+        ax.set_title("Residual Spectrum Flatness")
+        ax.set_xlabel("Frequency (radians)")
+        ax.set_ylabel("Spectral Density")
+        ax.tick_params(colors=text_color)
+        
+        fig.tight_layout()
+        self.bottom_plot_widget.canvas.draw()
+
 
 
 class ForecastingTab(BaseTab):
