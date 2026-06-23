@@ -159,24 +159,16 @@ def test_back_transform_multiplicative():
     np.testing.assert_allclose(res["lower_95"], [expected_lower_95])
     np.testing.assert_allclose(res["upper_95"], [expected_upper_95])
     
-    # Check that non-log series (e.g. Box-Cox with lambda = 1.0) use additive bounds
+    # Check that non-log series (e.g. Box-Cox with lambda = 1.0) now also use multiplicative prediction intervals back-transformation
     transformations_non_log = [
         {"type": "boxcox", "lambda": 1.0},
         {"type": "diff", "d": 1}
     ]
-    # Under standard additive back-transformation:
-    # point bounds are first back-transformed on differenced scale:
-    # lower_95 = 3.0 + 0.5 = 3.5
-    # upper_95 = 3.0 + 1.5 = 4.5
-    # Then boxcox with lambda = 1.0 undo: (1.0 * x + 1.0)**(1/1) = x + 1.0
-    # For orig = [exp(1), exp(2), exp(3)], wait.
-    # Let's verify standard additive back-transform:
-    # point = 1.0. Undone diff: 20.0855369 + 1.0 = 21.0855369
-    # If lambda = 1.0: y = (x - 1)/1 = x - 1. So undo is y + 1.
-    # The last value of original_series after BC (lambda=1.0) is exp(3) - 1.
-    # Undone diff: (exp(3) - 1) + 1.0 = exp(3).
-    # Then undo BC (y + 1): exp(3) + 1.
-    # Since it is additive, lower_95 is (exp(3) - 1) + 0.5 = exp(3) - 0.5. Undo BC: exp(3) + 0.5.
     res_non_log = back_transform(forecasts, transformations_non_log, orig)
-    assert np.isclose(res_non_log["lower_95"][0], orig.iloc[-1] + 0.5)
+    expected_point_non_log = np.exp(3.0) + 1.0
+    expected_lower_95_non_log = expected_point_non_log * np.exp(-0.5)
+    expected_upper_95_non_log = expected_point_non_log * np.exp(0.5)
+    np.testing.assert_allclose(res_non_log["point"], [expected_point_non_log])
+    np.testing.assert_allclose(res_non_log["lower_95"], [expected_lower_95_non_log])
+    np.testing.assert_allclose(res_non_log["upper_95"], [expected_upper_95_non_log])
 

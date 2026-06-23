@@ -733,8 +733,8 @@ class TransformTab(BaseTab):
         D = self.D_spin.value()
         s = self.s_spin.value()
         
-        from axis1_preprocessing import compute_frequency_response
-        omega, magnitude = compute_frequency_response(d, D, s)
+        omega = np.linspace(0, np.pi, 512)
+        magnitude = (2.0 * np.abs(np.sin(omega / 2.0))) ** (2 * d) * (2.0 * np.abs(np.sin(s * omega / 2.0))) ** (2 * D)
         
         fig = self.freq_plot_widget.canvas.figure
         fig.clear()
@@ -1321,9 +1321,44 @@ class ModelingTab(BaseTab):
             QMessageBox.warning(self, "No Data", "Please load and transform the data first.")
             return
             
-        from axis3_modeling import suggest_model_from_spectrum
-        res = suggest_model_from_spectrum(state.detected_cycles, state.seasonal_period_s)
-        self.suggestion_browser.setText(res["explanation"])
+        detected_cycles = state.detected_cycles
+        seasonal_period = state.seasonal_period_s
+        
+        explanation = []
+        explanation.append(f"Spectral Suggestion Analysis (Seasonal Period s={seasonal_period}):")
+        
+        significant_cycles = [c for c in detected_cycles if c.get("significant", False)]
+        explanation.append(f"- Total detected significant cycles: {len(significant_cycles)}")
+        for i, c in enumerate(significant_cycles[:5]):
+            explanation.append(f"  Cycle {i+1}: Period = {c['period']:.2f} samples (frequency = {c['frequency']:.4f})")
+            
+        if not significant_cycles:
+            explanation.append("\nConclusion: No significant cycles detected in the spectrum. Non-seasonal model suggested.")
+        else:
+            matched = False
+            for c in significant_cycles:
+                p = c["period"]
+                tolerance = 0.15 * seasonal_period
+                if abs(p - seasonal_period) <= tolerance:
+                    matched = True
+                    explanation.append(f"\nFound significant cycle with period {p:.2f} matching seasonal period {seasonal_period} (within 15% tolerance).")
+                    break
+                elif seasonal_period > 1:
+                    for h in [2, 3, 4]:
+                        harmonic_p = seasonal_period / h
+                        if abs(p - harmonic_p) <= 0.15 * harmonic_p:
+                            matched = True
+                            explanation.append(f"\nFound significant cycle with period {p:.2f} matching seasonal harmonic {harmonic_p:.2f} (within 15% tolerance).")
+                            break
+                    if matched:
+                        break
+                        
+            if matched:
+                explanation.append(f"\nConclusion: Significant cyclical/seasonal component detected. A seasonal SARIMA model with P=1, Q=1, s={seasonal_period} is suggested.")
+            else:
+                explanation.append("\nConclusion: Significant cycles detected, but none match the seasonal period or its main harmonics. A non-seasonal model is suggested, though cyclical features could be modeled with AR components.")
+                
+        self.suggestion_browser.setText("\n".join(explanation))
         
     def get_series_for_fitting(self):
         state = self.main_window.state
@@ -1643,16 +1678,19 @@ class ValidationTab(BaseTab):
         lb_lag_actual = min(lb_lag, h_max) if h_max > 0 else 0
         
         if lb_lag_actual > 0:
-            lb_pvalue = results['lb_pvalues'][lb_lag_actual - 1]
+            active_pvals = results['lb_pvalues'][:lb_lag_actual]
+            valid_pvals = active_pvals[~np.isnan(active_pvals)]
+            if len(valid_pvals) > 0:
+                lb_pass = bool(np.all(valid_pvals > 0.05))
+                lb_pvalue = float(np.min(valid_pvals))
+            else:
+                lb_pass = True
+                lb_pvalue = np.nan
         else:
-            lb_pvalue = np.nan
-        
-        if np.isnan(lb_pvalue):
             lb_pass = True
-            lb_status_str = "PASS"
-        else:
-            lb_pass = bool(lb_pvalue >= 0.05)
-            lb_status_str = "PASS" if lb_pass else "FAIL"
+            lb_pvalue = np.nan
+            
+        lb_status_str = "PASS" if lb_pass else "FAIL"
             
         jb_pvalue = results['jb_pvalue']
         jb_pass = bool(results['jb_pass'])
@@ -1720,12 +1758,12 @@ class ValidationTab(BaseTab):
         
         # Plot 2: ACF of residuals
         ax = axs[0, 1]
-        from statsmodels.tsa.stattools import acf
+        from axis3_modeling import compute_acf_pacf
         n_res = len(std_residuals)
         nlags = min(20, n_res // 2 - 1)
         if nlags < 1:
             nlags = 1
-        acf_vals = acf(std_residuals, nlags=nlags)
+        acf_vals, pacf_vals = compute_acf_pacf(pd.Series(std_residuals), nlags=nlags)
         lags = np.arange(len(acf_vals))
         ax.vlines(lags, 0, acf_vals, colors=accent_color, linewidth=2)
         ax.plot(lags, acf_vals, 'o', color=accent_color, markersize=4)
@@ -1740,11 +1778,6 @@ class ValidationTab(BaseTab):
         
         # Plot 3: PACF of residuals
         ax = axs[0, 2]
-        from statsmodels.tsa.stattools import pacf
-        try:
-            pacf_vals = pacf(std_residuals, nlags=nlags, method='ywm')
-        except Exception:
-            pacf_vals = pacf(std_residuals, nlags=nlags)
         lags = np.arange(len(pacf_vals))
         ax.vlines(lags, 0, pacf_vals, colors=accent_color, linewidth=2)
         ax.plot(lags, pacf_vals, 'o', color=accent_color, markersize=4)

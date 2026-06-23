@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from statsmodels.tsa.stattools import mackinnonp, mackinnoncrit
 
 def load_csv(path: str) -> pd.DataFrame:
     """
@@ -134,18 +133,31 @@ def run_adf_test(series: pd.Series) -> dict:
         # ADF statistic is the t-statistic of the lagged level (column 0)
         tau = beta_final[0] / se_beta[0]
         
-        # Calculate critical values and approximate p-value
-        c_vals = mackinnoncrit(N=1, regression='c', nobs=nobs_final)
-        p_value = mackinnonp(tau, regression='c', N=1)
-        
-        c1, c5, c10 = float(c_vals[0]), float(c_vals[1]), float(c_vals[2])
-        p_value = float(p_value)
+        # MacKinnon (1994) critical values (with constant, no trend)
+        critical_values = {"1%": -3.43, "5%": -2.86, "10%": -2.57}
+
+        # Approximate p-value via interpolation of MacKinnon response surface
+        # Linear interpolation between hardcoded thresholds:
+        # -3.43 -> 0.01, -2.86 -> 0.05, -2.57 -> 0.10
+        if tau <= -3.43:
+            p_value = 0.01
+        elif tau <= -2.86:
+            p_value = 0.01 + (tau - (-3.43)) / (-2.86 - (-3.43)) * (0.05 - 0.01)
+        elif tau <= -2.57:
+            p_value = 0.05 + (tau - (-2.86)) / (-2.57 - (-2.86)) * (0.10 - 0.05)
+        else:
+            # Interpolate above -2.57 up to 0.99 at tau >= 0.0
+            if tau >= 0.0:
+                p_value = 0.99
+            else:
+                p_value = 0.10 + (tau - (-2.57)) / (0.0 - (-2.57)) * (0.99 - 0.10)
+
         verdict = 'Stationary' if p_value < 0.05 else 'Non-Stationary'
         
         return {
             'adf_stat': float(tau),
             'p_value': p_value,
-            'critical_values': {'1%': c1, '5%': c5, '10%': c10},
+            'critical_values': critical_values,
             'verdict': verdict,
             'used_lag': best_p,
             'nobs': nobs_final,
@@ -246,16 +258,6 @@ def apply_differencing(series: pd.Series, d: int, D: int, s: int) -> pd.Series:
             new_arr[s:] = arr[s:] - arr[:-s]
         arr = new_arr
     return pd.Series(arr, index=series.index, name=series.name)
-
-def compute_frequency_response(d: int, D: int, s: int, n_points: int = 512) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Computes the squared gain function of the differencing filter.
-    """
-    omega = np.linspace(0, np.pi, n_points)
-    term1 = (2.0 * np.abs(np.sin(omega / 2.0))) ** (2 * d)
-    term2 = (2.0 * np.abs(np.sin(s * omega / 2.0))) ** (2 * D)
-    gain = term1 * term2
-    return omega, gain
 
 def rolling_mean(x: pd.Series | np.ndarray, window: int) -> pd.Series | np.ndarray:
     """

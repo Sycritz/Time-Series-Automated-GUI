@@ -250,11 +250,16 @@ def back_transform(forecasts: dict, transformations: list[dict], original_series
     histories = get_transformation_histories(original_series, transformations)
     transformed_forecasts = forecasts.copy()
     
-    # Check if a log transformation (Box-Cox with lambda = 0) was applied
-    has_log = any(t["type"] == "boxcox" and abs(t["lambda"]) < 1e-7 for t in transformations)
+    # Check if any Box-Cox transformation was applied and if differencing was also applied
+    has_bc = any(t["type"] == "boxcox" and t.get("lambda") is not None for t in transformations)
+    has_diff = any(
+        (t["type"] == "diff" and t.get("d", 0) > 0) or
+        (t["type"] == "seasonal_diff" and t.get("D", 0) > 0)
+        for t in transformations
+    )
     
     # We must have upper_95 and lower_95 to calculate the multiplicative intervals
-    use_multiplicative = has_log and "upper_95" in forecasts and "lower_95" in forecasts
+    use_multiplicative = has_bc and has_diff and "upper_95" in forecasts and "lower_95" in forecasts
     
     if use_multiplicative:
         from scipy.stats import norm

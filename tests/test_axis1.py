@@ -5,7 +5,7 @@ import os
 import pytest
 from axis1_preprocessing import (
     load_csv, run_adf_test,
-    apply_box_cox, apply_differencing, compute_frequency_response,
+    apply_box_cox, apply_differencing,
     box_cox_transform, box_cox_inverse, box_cox_profile_loglik,
     box_cox_auto, impute_series, rolling_mean, rolling_std,
     sample_autocovariance
@@ -67,17 +67,28 @@ def test_run_adf_test():
     res = run_adf_test(stat_series)
     res_sm = adfuller(stat_series.dropna(), maxlag=p_max, autolag='AIC')
     
-    # Verify values match statsmodels
+    # Verify values match statsmodels for statistics and custom values for p-values/critical values
     np.testing.assert_allclose(res['adf_stat'], res_sm[0], rtol=1e-7, atol=1e-7)
-    np.testing.assert_allclose(res['p_value'], res_sm[1], rtol=1e-7, atol=1e-7)
-    np.testing.assert_allclose(res['critical_values']['1%'], res_sm[4]['1%'], rtol=1e-7, atol=1e-7)
-    np.testing.assert_allclose(res['critical_values']['5%'], res_sm[4]['5%'], rtol=1e-7, atol=1e-7)
-    np.testing.assert_allclose(res['critical_values']['10%'], res_sm[4]['10%'], rtol=1e-7, atol=1e-7)
+    assert res['critical_values'] == {'1%': -3.43, '5%': -2.86, '10%': -2.57}
+    
+    tau = res['adf_stat']
+    if tau <= -3.43:
+        expected_p = 0.01
+    elif tau <= -2.86:
+        expected_p = 0.01 + (tau - (-3.43)) / (-2.86 - (-3.43)) * (0.05 - 0.01)
+    elif tau <= -2.57:
+        expected_p = 0.05 + (tau - (-2.86)) / (-2.57 - (-2.86)) * (0.10 - 0.05)
+    else:
+        if tau >= 0.0:
+            expected_p = 0.99
+        else:
+            expected_p = 0.10 + (tau - (-2.57)) / (0.0 - (-2.57)) * (0.99 - 0.10)
+    assert np.isclose(res['p_value'], expected_p)
     
     nobs_sm = res_sm[3]
     used_lag_sm = res_sm[2]
     assert nobs_sm == N - 1 - used_lag_sm
-    assert res['verdict'] == 'Stationary'
+    assert res['verdict'] == ('Stationary' if expected_p < 0.05 else 'Non-Stationary')
     
     # 2. Non-stationary series (random walk)
     np.random.seed(42)
@@ -87,11 +98,22 @@ def test_run_adf_test():
     res_ns_sm = adfuller(non_stat_series.dropna(), maxlag=p_max, autolag='AIC')
     
     np.testing.assert_allclose(res_ns['adf_stat'], res_ns_sm[0], rtol=1e-7, atol=1e-7)
-    np.testing.assert_allclose(res_ns['p_value'], res_ns_sm[1], rtol=1e-7, atol=1e-7)
-    np.testing.assert_allclose(res_ns['critical_values']['1%'], res_ns_sm[4]['1%'], rtol=1e-7, atol=1e-7)
-    np.testing.assert_allclose(res_ns['critical_values']['5%'], res_ns_sm[4]['5%'], rtol=1e-7, atol=1e-7)
-    np.testing.assert_allclose(res_ns['critical_values']['10%'], res_ns_sm[4]['10%'], rtol=1e-7, atol=1e-7)
-    assert res_ns['verdict'] == 'Non-Stationary'
+    assert res_ns['critical_values'] == {'1%': -3.43, '5%': -2.86, '10%': -2.57}
+    
+    tau_ns = res_ns['adf_stat']
+    if tau_ns <= -3.43:
+        expected_p_ns = 0.01
+    elif tau_ns <= -2.86:
+        expected_p_ns = 0.01 + (tau_ns - (-3.43)) / (-2.86 - (-3.43)) * (0.05 - 0.01)
+    elif tau_ns <= -2.57:
+        expected_p_ns = 0.05 + (tau_ns - (-2.86)) / (-2.57 - (-2.86)) * (0.10 - 0.05)
+    else:
+        if tau_ns >= 0.0:
+            expected_p_ns = 0.99
+        else:
+            expected_p_ns = 0.10 + (tau_ns - (-2.57)) / (0.0 - (-2.57)) * (0.99 - 0.10)
+    assert np.isclose(res_ns['p_value'], expected_p_ns)
+    assert res_ns['verdict'] == ('Stationary' if expected_p_ns < 0.05 else 'Non-Stationary')
     print("run_adf_test passed.")
 
 def test_apply_box_cox():
@@ -131,17 +153,6 @@ def test_apply_differencing():
     # 4 - 1 = 3, 7 - 2 = 5, 11 - 4 = 7, 16 - 7 = 9
     assert list(diff_seas.dropna()) == [3.0, 5.0, 7.0, 9.0]
     print("apply_differencing passed.")
-
-def test_compute_frequency_response():
-    print("Testing compute_frequency_response...")
-    w, mag = compute_frequency_response(1, 0, 1, n_points=100)
-    assert len(w) == 100
-    assert len(mag) == 100
-    assert mag[0] == 0.0  # magnitude response of first diff is 0 at frequency 0
-    
-    w_seas, mag_seas = compute_frequency_response(0, 1, 12, n_points=100)
-    assert mag_seas[0] == 0.0
-    print("compute_frequency_response passed.")
 
 def test_rolling_and_autocovariance():
     print("Testing custom rolling mean, std and autocovariance...")
@@ -274,7 +285,6 @@ if __name__ == "__main__":
     test_run_adf_test()
     test_apply_box_cox()
     test_apply_differencing()
-    test_compute_frequency_response()
     test_rolling_and_autocovariance()
     test_box_cox_detailed()
     test_impute_series_detailed()

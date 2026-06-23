@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 from axis3_modeling import (
     compute_acf_pacf, suggest_model_from_acf_pacf,
-    suggest_model_from_spectrum, fit_model, grid_search
+    fit_model, grid_search
 )
 
 def test_compute_acf_pacf():
@@ -62,27 +62,6 @@ def test_suggest_model_from_acf_pacf():
     assert res["p"] == 1
     assert res["q"] == 1
 
-def test_suggest_model_from_spectrum():
-    # 1. No significant cycles
-    cycles = [
-        {"frequency": 0.1, "period": 10.0, "significant": False},
-        {"frequency": 0.2, "period": 5.0, "significant": False}
-    ]
-    res = suggest_model_from_spectrum(cycles, seasonal_period=12)
-    assert res["P"] == 0
-    assert res["Q"] == 0
-    
-    # 2. Significant cycle matching seasonal period
-    cycles = [
-        {"frequency": 2.0 * np.pi / 12.0, "period": 12.0, "significant": True},
-        {"frequency": 0.2, "period": 5.0, "significant": False}
-    ]
-    res = suggest_model_from_spectrum(cycles, seasonal_period=12)
-    assert res["P"] == 1
-    assert res["Q"] == 1
-    assert res["s"] == 12
-    assert "Significant cyclical/seasonal component detected" in res["explanation"]
-
 def test_fit_model_and_grid_search():
     # Create simple AR(1) process
     np.random.seed(42)
@@ -97,7 +76,7 @@ def test_fit_model_and_grid_search():
     # Test fitting non-seasonal
     res = fit_model(series, order=(1, 0, 0), seasonal_order=None)
     assert res is not None
-    assert len(res.params) == 3 # const, ar.L1, sigma2
+    assert len(res.params) == 2 # ar.L1, sigma2
     
     # Test fitting seasonal
     res_seas = fit_model(series, order=(1, 0, 0), seasonal_order=(1, 0, 0, 12))

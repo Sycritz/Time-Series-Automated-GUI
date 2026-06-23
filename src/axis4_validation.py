@@ -26,11 +26,8 @@ def ljung_box_test(res: np.ndarray, lags: int, p: int, q: int) -> tuple[np.ndarr
         cumsum += (rho[h] ** 2) / (n - h)
         q_stat = n * (n + 2) * cumsum
         stats[h - 1] = q_stat
-        df = h - p - q
-        if df > 0:
-            pvalues[h - 1] = 1.0 - chi2.cdf(q_stat, df=df)
-        else:
-            pvalues[h - 1] = np.nan
+        df = max(1, h - p - q)
+        pvalues[h - 1] = 1.0 - chi2.cdf(q_stat, df=df)
     return stats, pvalues
 
 def jarque_bera_test(res: np.ndarray) -> tuple[float, float]:
@@ -144,15 +141,11 @@ def run_all_diagnostics(residuals: np.ndarray, p: int, q: int) -> dict:
             lb_pvalues = np.concatenate([lb_pvalues, np.full(pad, np.nan)])
             
         lb_p_value_20 = lb_pvalues[19] if len(lb_pvalues) > 19 else np.nan
-        if np.isnan(lb_p_value_20):
-            non_nan_pvals = lb_pvalues[~np.isnan(lb_pvalues)]
-            if len(non_nan_pvals) > 0:
-                lb_p_value_20 = non_nan_pvals[-1]
-                lb_pass = (lb_p_value_20 >= 0.05)
-            else:
-                lb_pass = True
+        valid_pvals = lb_pvalues[~np.isnan(lb_pvalues)]
+        if len(valid_pvals) > 0:
+            lb_pass = bool(np.all(valid_pvals > 0.05))
         else:
-            lb_pass = (lb_p_value_20 >= 0.05)
+            lb_pass = True
 
     # 2. Jarque-Bera Test for Normality
     if n < 2:

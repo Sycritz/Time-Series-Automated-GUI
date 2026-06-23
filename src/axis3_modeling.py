@@ -134,44 +134,6 @@ def suggest_model_from_acf_pacf(acf_vals: np.ndarray, pacf_vals: np.ndarray, n: 
             
     return {"p": p_suggest, "q": q_suggest, "explanation": "\n".join(explanation)}
 
-def suggest_model_from_spectrum(detected_cycles: list[dict], seasonal_period: int) -> dict:
-    explanation = []
-    explanation.append(f"Spectral Suggestion Analysis (Seasonal Period s={seasonal_period}):")
-    
-    significant_cycles = [c for c in detected_cycles if c.get("significant", False)]
-    explanation.append(f"- Total detected significant cycles: {len(significant_cycles)}")
-    for i, c in enumerate(significant_cycles[:5]):
-        explanation.append(f"  Cycle {i+1}: Period = {c['period']:.2f} samples (frequency = {c['frequency']:.4f})")
-        
-    if not significant_cycles:
-        explanation.append("\nConclusion: No significant cycles detected in the spectrum. Non-seasonal model suggested.")
-        return {"P": 0, "Q": 0, "s": seasonal_period, "explanation": "\n".join(explanation)}
-        
-    matched = False
-    for c in significant_cycles:
-        p = c["period"]
-        tolerance = 0.15 * seasonal_period
-        if abs(p - seasonal_period) <= tolerance:
-            matched = True
-            explanation.append(f"\nFound significant cycle with period {p:.2f} matching seasonal period {seasonal_period} (within 15% tolerance).")
-            break
-        elif seasonal_period > 1:
-            for h in [2, 3, 4]:
-                harmonic_p = seasonal_period / h
-                if abs(p - harmonic_p) <= 0.15 * harmonic_p:
-                    matched = True
-                    explanation.append(f"\nFound significant cycle with period {p:.2f} matching seasonal harmonic {harmonic_p:.2f} (within 15% tolerance).")
-                    break
-            if matched:
-                break
-                
-    if matched:
-        explanation.append(f"\nConclusion: Significant cyclical/seasonal component detected. A seasonal SARIMA model with P=1, Q=1, s={seasonal_period} is suggested.")
-        return {"P": 1, "Q": 1, "s": seasonal_period, "explanation": "\n".join(explanation)}
-    else:
-        explanation.append("\nConclusion: Significant cycles detected, but none match the seasonal period or its main harmonics. A non-seasonal model is suggested, though cyclical features could be modeled with AR components.")
-        return {"P": 0, "Q": 0, "s": seasonal_period, "explanation": "\n".join(explanation)}
-
 def fit_model(series: pd.Series, order: tuple[int, int, int], seasonal_order: tuple[int, int, int, int] | None):
     clean_series = series.dropna()
     p, d, q = order
@@ -183,18 +145,15 @@ def fit_model(series: pd.Series, order: tuple[int, int, int], seasonal_order: tu
             is_seas = True
             D = D_s
             
-    # Include intercept term ('c') if and only if differencing orders d and D are both zero
-    trend = 'c' if (d == 0 and D == 0) else 'n'
-    
     actual_seasonal_order = seasonal_order if is_seas else None
     
     model = SARIMAX(
         clean_series,
         order=order,
         seasonal_order=actual_seasonal_order,
-        trend=trend,
-        enforce_stationarity=False,
-        enforce_invertibility=False
+        trend='n',
+        enforce_stationarity=True,
+        enforce_invertibility=True
     )
     res = model.fit(disp=False, method='lbfgs', maxiter=200)
     return res

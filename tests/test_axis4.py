@@ -75,10 +75,10 @@ def test_ljung_box_exact():
     assert not np.isnan(pvals[0])
     assert not np.isnan(pvals[1])
     
-    # Check that df <= 0 returns NaN pvalues
+    # Check that df <= 0 falls back to max(1, h - p - q) and does not return NaN
     stats_df, pvals_df = ljung_box_test(res, lags=2, p=1, q=1)
-    assert np.isnan(pvals_df[0])
-    assert np.isnan(pvals_df[1])
+    assert not np.isnan(pvals_df[0])
+    assert not np.isnan(pvals_df[1])
 
 def test_jarque_bera_exact():
     # Simple known series
@@ -86,5 +86,26 @@ def test_jarque_bera_exact():
     jb_stat, pvalue = jarque_bera_test(res)
     assert jb_stat >= 0.0
     assert 0.0 <= pvalue <= 1.0
+
+def test_ljung_box_failing_early_passing_late(monkeypatch):
+    import axis4_validation
+    
+    def mock_ljung_box_test(res, lags, p, q):
+        stats = np.arange(1, 21) * 2.0
+        pvals = np.ones(20) * 0.90
+        pvals[4] = 0.01  # lag 5 fails (<= 0.05)
+        pvals[19] = 0.95 # lag 20 passes (> 0.05)
+        return stats, pvals
+        
+    monkeypatch.setattr(axis4_validation, "ljung_box_test", mock_ljung_box_test)
+    
+    residuals = np.random.randn(100)
+    results = axis4_validation.run_all_diagnostics(residuals, p=0, q=0)
+    
+    # The overall lb_pass should be False because lag 5 failed, even though lag 20 passed.
+    assert not results['lb_pass']
+    assert results['lb_pvalues'][4] == 0.01
+    assert results['lb_pvalues'][19] == 0.95
+
 
 
