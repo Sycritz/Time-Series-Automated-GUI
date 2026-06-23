@@ -112,6 +112,30 @@ def test_compute_frequency_response():
     assert mag_seas[0] == 0.0
     print("compute_frequency_response passed.")
 
+def test_rolling_and_autocovariance():
+    print("Testing custom rolling mean, std and autocovariance...")
+    from axis1_preprocessing import rolling_mean, rolling_std, sample_autocovariance
+    x = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
+    
+    # Test rolling_mean
+    rm = rolling_mean(x, 3)
+    np.testing.assert_allclose(rm[2:], [4.0, 6.0, 8.0])
+    assert np.isnan(rm[0]) and np.isnan(rm[1])
+    
+    # Test rolling_std
+    rs = rolling_std(x, 3)
+    np.testing.assert_allclose(rs[2:], [2.0, 2.0, 2.0])
+    assert np.isnan(rs[0]) and np.isnan(rs[1])
+    
+    # Test sample_autocovariance
+    # For [2.0, 4.0, 6.0, 8.0, 10.0]: mean = 6.0
+    # diffs = [-4, -2, 0, 2, 4]
+    # h = 0: (16 + 4 + 0 + 4 + 16)/5 = 40/5 = 8.0
+    # h = 1: ((-4)*(-2) + (-2)*0 + 0*2 + 2*4)/5 = (8 + 8)/5 = 3.2
+    assert np.isclose(sample_autocovariance(x, 0), 8.0)
+    assert np.isclose(sample_autocovariance(x, 1), 3.2)
+    print("Rolling and autocovariance tests passed.")
+
 if __name__ == "__main__":
     test_load_csv()
     test_handle_missing()
@@ -119,4 +143,6 @@ if __name__ == "__main__":
     test_apply_box_cox()
     test_apply_differencing()
     test_compute_frequency_response()
+    test_rolling_and_autocovariance()
     print("All preprocessing tests passed successfully!")
+

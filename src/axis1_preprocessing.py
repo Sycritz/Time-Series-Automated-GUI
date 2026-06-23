@@ -100,3 +100,54 @@ def compute_frequency_response(d: int, D: int, s: int, n_points: int = 512) -> t
     term2 = (2.0 * np.abs(np.sin(s * omega / 2.0))) ** (2 * D)
     gain = term1 * term2
     return omega, gain
+
+def rolling_mean(x: pd.Series | np.ndarray, window: int) -> pd.Series | np.ndarray:
+    """
+    Compute rolling mean manually.
+    Returns object of same type; first (window-1) values are NaN.
+    """
+    if window <= 0:
+        raise ValueError("Window size must be greater than 0.")
+    is_series = isinstance(x, pd.Series)
+    values = x.values if is_series else np.asarray(x)
+    n = len(values)
+    result = np.full(n, np.nan)
+    for t in range(window - 1, n):
+        result[t] = np.mean(values[t - window + 1 : t + 1])
+    if is_series:
+        return pd.Series(result, index=x.index, name=x.name)
+    return result
+
+def rolling_std(x: pd.Series | np.ndarray, window: int) -> pd.Series | np.ndarray:
+    """
+    Compute rolling standard deviation manually (ddof=1).
+    Returns object of same type; first (window-1) values are NaN.
+    """
+    if window <= 1:
+        raise ValueError("Window size must be greater than 1 for standard deviation.")
+    is_series = isinstance(x, pd.Series)
+    values = x.values if is_series else np.asarray(x)
+    n = len(values)
+    result = np.full(n, np.nan)
+    for t in range(window - 1, n):
+        segment = values[t - window + 1 : t + 1]
+        result[t] = np.sqrt(np.sum((segment - np.mean(segment)) ** 2) / (window - 1))
+    if is_series:
+        return pd.Series(result, index=x.index, name=x.name)
+    return result
+
+def sample_autocovariance(x: pd.Series | np.ndarray, h: int) -> float:
+    """
+    Sample autocovariance at lag h (B&D §1.4, STAT720 §2.6).
+    gamma_hat(h) = (1/n) * sum_{t=1}^{n-h} (x_t - x_bar)(x_{t+h} - x_bar)
+    Uses the biased estimator (divides by n, not n-h) for positive semidefiniteness.
+    """
+    values = x.values if isinstance(x, pd.Series) else np.asarray(x)
+    n = len(values)
+    if h < 0:
+        raise ValueError("Lag h must be non-negative.")
+    if h >= n:
+        return 0.0
+    x_bar = np.mean(values)
+    return float(np.sum((values[: n - h] - x_bar) * (values[h:] - x_bar)) / n)
+
