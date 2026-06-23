@@ -109,3 +109,23 @@ def test_fit_model_and_grid_search():
     assert "Rank" in df.columns
     assert "Model" in df.columns
     assert df.loc[0, "Rank"] == 1
+
+def test_custom_acf_pacf_exact():
+    # Simple series
+    series = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+    # Under biased autocovariance:
+    # Mean is 3.0. Deviations: [-2.0, -1.0, 0.0, 1.0, 2.0]
+    # gamma(0) = (4 + 1 + 0 + 1 + 4) / 5 = 10 / 5 = 2.0
+    # gamma(1) = ((-2)*(-1) + (-1)*0 + 0*1 + 1*2) / 5 = (2 + 2) / 5 = 0.8
+    # gamma(2) = ((-2)*0 + (-1)*1 + 0*2) / 5 = -1 / 5 = -0.2
+    # So acf = [1.0, 0.8 / 2.0, -0.2 / 2.0] = [1.0, 0.4, -0.1]
+    # Durbin-Levinson for PACF:
+    # phi_11 = rho(1) = 0.4
+    # v_1 = 1 - phi_11^2 = 1 - 0.16 = 0.84
+    # h = 2:
+    # num = rho(2) - phi_11 * rho(1) = -0.1 - 0.4 * 0.4 = -0.26
+    # phi_22 = num / v_1 = -0.26 / 0.84 = -13 / 42 approx -0.3095238
+    acf_vals, pacf_vals = compute_acf_pacf(series, nlags=2)
+    np.testing.assert_allclose(acf_vals, [1.0, 0.4, -0.1])
+    np.testing.assert_allclose(pacf_vals, [1.0, 0.4, -13.0/42.0])
+
