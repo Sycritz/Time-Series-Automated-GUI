@@ -129,3 +129,29 @@ def test_custom_acf_pacf_exact():
     np.testing.assert_allclose(acf_vals, [1.0, 0.4, -0.1])
     np.testing.assert_allclose(pacf_vals, [1.0, 0.4, -13.0/42.0])
 
+def test_suggest_model_stray_lags_and_tails_off():
+    # 1. Stray lag in ACF (cuts off at 1 with stray lag at 5, threshold = 0.196)
+    acf_vals = np.array([1.0, 0.4, 0.05, 0.05, 0.05, 0.3])
+    pacf_vals = np.array([1.0, 0.05, 0.05, 0.05, 0.05, 0.05])
+    res = suggest_model_from_acf_pacf(acf_vals, pacf_vals, n=100)
+    # ACF cutoff should be 1. PACF cutoff should be None.
+    # So it should suggest MA(1).
+    assert res["q"] == 1
+    assert res["p"] == 0
+
+    # 2. Stray lag in PACF (cuts off at 2 with stray lag at 6)
+    acf_vals = np.array([1.0, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05])
+    pacf_vals = np.array([1.0, 0.35, 0.4, 0.05, 0.05, 0.05, 0.3])
+    res = suggest_model_from_acf_pacf(acf_vals, pacf_vals, n=100)
+    # PACF cutoff should be 2. ACF cutoff should be None.
+    # So it should suggest AR(2).
+    assert res["p"] == 2
+    assert res["q"] == 0
+
+    # 3. Tails off (at least 3 significant lags and no cutoff at <= 3)
+    acf_vals = np.array([1.0, 0.3, 0.3, 0.05, 0.3, 0.3])
+    pacf_vals = np.array([1.0, 0.3, 0.3, 0.05, 0.3, 0.3])
+    res = suggest_model_from_acf_pacf(acf_vals, pacf_vals, n=100)
+    assert res["p"] == 1
+    assert res["q"] == 1
+
