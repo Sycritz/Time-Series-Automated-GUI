@@ -1,15 +1,63 @@
 import numpy as np
 import pandas as pd
-from statsmodels.stats.diagnostic import acorr_ljungbox
-from scipy.stats import jarque_bera
+from scipy.stats import chi2
 from axis2_spectral import smooth_spectrum
+
+def ljung_box_test(res: np.ndarray, lags: int, p: int, q: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute Ljung-Box test statistic and p-values from scratch.
+    """
+    n = len(res)
+    if n == 0:
+        return np.array([]), np.array([])
+    res_c = res - np.mean(res)
+    gamma0 = np.sum(res_c ** 2) / n
+    if gamma0 < 1e-14:
+        return np.zeros(lags), np.ones(lags)
+    
+    rho = np.zeros(lags + 1)
+    for h in range(1, lags + 1):
+        rho[h] = np.dot(res_c[: n - h], res_c[h:]) / (n * gamma0)
+        
+    stats = np.zeros(lags)
+    pvalues = np.zeros(lags)
+    cumsum = 0.0
+    for h in range(1, lags + 1):
+        cumsum += (rho[h] ** 2) / (n - h)
+        q_stat = n * (n + 2) * cumsum
+        stats[h - 1] = q_stat
+        df = h - p - q
+        if df > 0:
+            pvalues[h - 1] = 1.0 - chi2.cdf(q_stat, df=df)
+        else:
+            pvalues[h - 1] = np.nan
+    return stats, pvalues
+
+def jarque_bera_test(res: np.ndarray) -> tuple[float, float]:
+    """
+    Compute Jarque-Bera statistic and p-value from scratch.
+    """
+    n = len(res)
+    if n < 2:
+        return 0.0, 1.0
+    res_c = res - np.mean(res)
+    m2 = np.sum(res_c ** 2) / n
+    m3 = np.sum(res_c ** 3) / n
+    m4 = np.sum(res_c ** 4) / n
+    if m2 < 1e-14:
+        return 0.0, 1.0
+    S = m3 / (m2 ** 1.5)
+    K = m4 / (m2 ** 2)
+    jb_stat = n * (S ** 2 / 6.0 + (K - 3.0) ** 2 / 24.0)
+    pvalue = 1.0 - chi2.cdf(jb_stat, df=2)
+    return float(jb_stat), float(pvalue)
 
 def compute_cumulative_periodogram(residuals: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute the normalized cumulative periodogram C(omega_k) and the 95% Kolmogorov-Smirnov bounds.
     Eq. 10-11. K_0.05 approx 1.358.
     Returns:
-        frequencies (np.ndarray): cycles per unit time (k/n)
+         frequencies (np.ndarray): cycles per unit time (k/n)
         C_omega (np.ndarray): normalized cumulative periodogram
         ks_upper (np.ndarray): upper KS bound
         ks_lower (np.ndarray): lower KS bound
@@ -87,9 +135,7 @@ def run_all_diagnostics(residuals: np.ndarray, p: int, q: int) -> dict:
         lb_p_value_20 = np.nan
         lb_pass = True
     else:
-        lb_df = acorr_ljungbox(res, lags=h_max, model_df=p+q)
-        lb_stats = lb_df['lb_stat'].values
-        lb_pvalues = lb_df['lb_pvalue'].values
+        lb_stats, lb_pvalues = ljung_box_test(res, h_max, p, q)
         
         # Pad with NaNs if necessary to reach length 20
         if len(lb_stats) < 20:
@@ -114,7 +160,7 @@ def run_all_diagnostics(residuals: np.ndarray, p: int, q: int) -> dict:
         jb_pvalue = 1.0
         jb_pass = True
     else:
-        jb_stat, jb_pvalue = jarque_bera(res)
+        jb_stat, jb_pvalue = jarque_bera_test(res)
         jb_pass = (jb_pvalue >= 0.05)
 
     # 3. Cumulative Periodogram Test

@@ -3,7 +3,9 @@ import pytest
 from axis4_validation import (
     compute_cumulative_periodogram,
     compute_residual_spectrum,
-    run_all_diagnostics
+    run_all_diagnostics,
+    ljung_box_test,
+    jarque_bera_test
 )
 
 def test_cumulative_periodogram_white_noise():
@@ -62,4 +64,27 @@ def test_run_all_diagnostics_inadequate():
         
     results = run_all_diagnostics(residuals, p=1, q=0)
     assert (not results['lb_pass']) or (not results['cp_pass'])
+
+def test_ljung_box_exact():
+    # Simple known residuals series
+    res = np.array([0.1, -0.2, 0.3, -0.4, 0.5])
+    # Compute Ljung-Box test for lag 2
+    stats, pvals = ljung_box_test(res, lags=2, p=0, q=0)
+    assert len(stats) == 2
+    assert len(pvals) == 2
+    assert not np.isnan(pvals[0])
+    assert not np.isnan(pvals[1])
+    
+    # Check that df <= 0 returns NaN pvalues
+    stats_df, pvals_df = ljung_box_test(res, lags=2, p=1, q=1)
+    assert np.isnan(pvals_df[0])
+    assert np.isnan(pvals_df[1])
+
+def test_jarque_bera_exact():
+    # Simple known series
+    res = np.array([-1.0, 0.0, 1.0, 2.0, -2.0])
+    jb_stat, pvalue = jarque_bera_test(res)
+    assert jb_stat >= 0.0
+    assert 0.0 <= pvalue <= 1.0
+
 

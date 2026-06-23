@@ -117,3 +117,66 @@ def test_generate_forecasts_integration():
     assert len(forecasts["lower_95"]) == 5
     assert (forecasts["lower_95"] < forecasts["point"]).all()
     assert (forecasts["upper_95"] > forecasts["point"]).all()
+
+def test_back_transform_multiplicative():
+    # Original series on exponential scale
+    orig = pd.Series([np.exp(1.0), np.exp(2.0), np.exp(3.0)])
+    transformations = [
+        {"type": "boxcox", "lambda": 0.0},
+        {"type": "diff", "d": 1}
+    ]
+    # Forecasts on stationary scale
+    # point = 1.0. If z_95 * sigma_stationary = 0.5, then:
+    # lower_95 = 1.0 - 0.5 = 0.5
+    # upper_95 = 1.0 + 0.5 = 1.5
+    forecasts = {
+        "point": np.array([1.0]),
+        "lower_50": np.array([0.8]),
+        "upper_50": np.array([1.2]),
+        "lower_80": np.array([0.7]),
+        "upper_80": np.array([1.3]),
+        "lower_95": np.array([0.5]),
+        "upper_95": np.array([1.5])
+    }
+    
+    # Back-transform should:
+    # 1. Back-transform point forecast normally:
+    #    diff undo: 3.0 (from log(orig[-1])) + 1.0 (forecast point) = 4.0
+    #    boxcox (log) undo: exp(4.0)
+    # 2. Extract sigma_stationary: (1.5 - 0.5) / (2.0 * z_95) = 1.0 / (2 * z_95)
+    #    so z * sigma_stationary for level 95% is exactly 0.5.
+    # 3. Apply multiplicative scaling:
+    #    lower_95 = exp(4.0) * exp(-0.5)
+    #    upper_95 = exp(4.0) * exp(+0.5)
+    
+    res = back_transform(forecasts, transformations, orig)
+    
+    expected_point = np.exp(4.0)
+    expected_lower_95 = np.exp(4.0) * np.exp(-0.5)
+    expected_upper_95 = np.exp(4.0) * np.exp(0.5)
+    
+    np.testing.assert_allclose(res["point"], [expected_point])
+    np.testing.assert_allclose(res["lower_95"], [expected_lower_95])
+    np.testing.assert_allclose(res["upper_95"], [expected_upper_95])
+    
+    # Check that non-log series (e.g. Box-Cox with lambda = 1.0) use additive bounds
+    transformations_non_log = [
+        {"type": "boxcox", "lambda": 1.0},
+        {"type": "diff", "d": 1}
+    ]
+    # Under standard additive back-transformation:
+    # point bounds are first back-transformed on differenced scale:
+    # lower_95 = 3.0 + 0.5 = 3.5
+    # upper_95 = 3.0 + 1.5 = 4.5
+    # Then boxcox with lambda = 1.0 undo: (1.0 * x + 1.0)**(1/1) = x + 1.0
+    # For orig = [exp(1), exp(2), exp(3)], wait.
+    # Let's verify standard additive back-transform:
+    # point = 1.0. Undone diff: 20.0855369 + 1.0 = 21.0855369
+    # If lambda = 1.0: y = (x - 1)/1 = x - 1. So undo is y + 1.
+    # The last value of original_series after BC (lambda=1.0) is exp(3) - 1.
+    # Undone diff: (exp(3) - 1) + 1.0 = exp(3).
+    # Then undo BC (y + 1): exp(3) + 1.
+    # Since it is additive, lower_95 is (exp(3) - 1) + 0.5 = exp(3) - 0.5. Undo BC: exp(3) + 0.5.
+    res_non_log = back_transform(forecasts, transformations_non_log, orig)
+    assert np.isclose(res_non_log["lower_95"][0], orig.iloc[-1] + 0.5)
+
