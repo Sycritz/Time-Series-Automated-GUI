@@ -688,6 +688,9 @@ class TransformTab(BaseTab):
         if len(clean_series) == 0:
             return
             
+        if window_size >= len(clean_series):
+            window_size = max(2, len(clean_series) - 1)
+            
         ax1.plot(clean_series.index, clean_series.values, color='#1F2937', label='Transformed Series', alpha=0.8)
         from axis1_preprocessing import rolling_mean, rolling_std
         rolling_mean_vals = rolling_mean(clean_series, window_size)
