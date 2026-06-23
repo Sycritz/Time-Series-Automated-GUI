@@ -72,8 +72,8 @@ def test_gui_validation_workflow_fail():
     verdict_text_bad = tab5.verdict_browser.toPlainText()
     assert "MODEL IS INADEQUATE" in verdict_text_bad
     
-    # Verify Tab 6 remains disabled
-    assert window.tab_widget.isTabEnabled(5) is False
+    # Verify Tab 6 is enabled (exploratory forecasting is allowed with warning)
+    assert window.tab_widget.isTabEnabled(5) is True
     print("GUI Tab 5 FAIL Workflow tests passed.")
 
 def test_gui_validation_workflow_pass(monkeypatch):

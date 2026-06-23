@@ -114,6 +114,7 @@ def test_compute_frequency_response():
 
 def test_rolling_and_autocovariance():
     print("Testing custom rolling mean, std and autocovariance...")
+    import pytest
     from axis1_preprocessing import rolling_mean, rolling_std, sample_autocovariance
     x = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
     
@@ -134,7 +135,38 @@ def test_rolling_and_autocovariance():
     # h = 1: ((-4)*(-2) + (-2)*0 + 0*2 + 2*4)/5 = (8 + 8)/5 = 3.2
     assert np.isclose(sample_autocovariance(x, 0), 8.0)
     assert np.isclose(sample_autocovariance(x, 1), 3.2)
+    
+    # Test pd.Series support and metadata preservation
+    series_x = pd.Series(x, index=[10, 20, 30, 40, 50], name="test_col")
+    rm_s = rolling_mean(series_x, 3)
+    assert isinstance(rm_s, pd.Series)
+    assert rm_s.name == "test_col"
+    pd.testing.assert_index_equal(rm_s.index, series_x.index)
+    np.testing.assert_allclose(rm_s.values[2:], [4.0, 6.0, 8.0])
+    
+    rs_s = rolling_std(series_x, 3)
+    assert isinstance(rs_s, pd.Series)
+    assert rs_s.name == "test_col"
+    pd.testing.assert_index_equal(rs_s.index, series_x.index)
+    np.testing.assert_allclose(rs_s.values[2:], [2.0, 2.0, 2.0])
+    
+    # Test exception handling and validation boundaries
+    with pytest.raises(ValueError, match="Window size must be greater than 0"):
+        rolling_mean(x, 0)
+    with pytest.raises(ValueError, match="Window size must be greater than 1"):
+        rolling_std(x, 1)
+    with pytest.raises(ValueError, match="Lag h must be non-negative"):
+        sample_autocovariance(x, -1)
+    
+    # Test edge case window > n and h >= n
+    rm_large = rolling_mean(x, 10)
+    assert np.all(np.isnan(rm_large))
+    rs_large = rolling_std(x, 10)
+    assert np.all(np.isnan(rs_large))
+    assert sample_autocovariance(x, 10) == 0.0
+    
     print("Rolling and autocovariance tests passed.")
+
 
 if __name__ == "__main__":
     test_load_csv()
