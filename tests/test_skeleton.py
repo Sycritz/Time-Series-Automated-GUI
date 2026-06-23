@@ -154,7 +154,7 @@ def test_gui_gating_and_indicators():
     window.update_ui_from_state()
     
     assert window.tab_widget.isTabEnabled(4) is True
-    assert window.tab_widget.isTabEnabled(5) is False
+    assert window.tab_widget.isTabEnabled(5) is True  # Tab 6 enabled when model is fitted
     
     assert window.indicators[3].color.name() == "#16a34a"
     # Indicator 4 (Validation) must be neutral because validation_run is False
@@ -162,6 +162,7 @@ def test_gui_gating_and_indicators():
     
     # 4. Validation passed
     window.state.validation_passed = True
+    window.state.validation_run = True
     window.update_ui_from_state()
     
     assert window.tab_widget.isTabEnabled(5) is True
@@ -170,11 +171,12 @@ def test_gui_gating_and_indicators():
     
     # 5. Validation failed
     window.state.validation_passed = False
+    window.state.validation_run = True
     window.update_ui_from_state()
     
-    assert window.tab_widget.isTabEnabled(5) is False
+    assert window.tab_widget.isTabEnabled(5) is True  # Tab 6 remains enabled
     assert window.indicators[4].color.name() == "#dc2626"  # Red / fail
-    assert window.indicators[5].color.name() == "#9ca3af"  # Neutral
+    assert window.indicators[5].color.name() == "#dc2626"  # Red / fail
     
     # 6. Change original series -> resets everything downstream
     window.state.original_series = pd.Series([4, 5, 6])

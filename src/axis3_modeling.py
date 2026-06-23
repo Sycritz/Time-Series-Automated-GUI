@@ -2,35 +2,55 @@ import numpy as np
 import pandas as pd
 import warnings
 from PySide6.QtCore import QThread, Signal
-from statsmodels.tsa.stattools import acf, pacf
-from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 def compute_acf_pacf(series: pd.Series, nlags: int) -> tuple[np.ndarray, np.ndarray]:
+    from axis1_preprocessing import sample_autocovariance
+    
     clean_series = series.dropna()
     n = len(clean_series)
     if n == 0:
         return np.array([1.0]), np.array([1.0])
     
-    # Cap nlags based on statsmodels constraints (nlags < n // 2)
-    actual_lags = min(nlags, n // 2 - 1)
+    # Cap nlags based on statsmodels constraints (nlags <= n // 2)
+    actual_lags = min(nlags, n // 2)
     if actual_lags < 1:
         actual_lags = min(1, n - 1)
     if actual_lags < 1:
         return np.array([1.0]), np.array([1.0])
         
-    try:
-        acf_vals = acf(clean_series, nlags=actual_lags)
-        pacf_vals = pacf(clean_series, nlags=actual_lags, method='ywm')
-    except Exception:
-        try:
-            acf_vals = acf(clean_series, nlags=actual_lags)
-            pacf_vals = pacf(clean_series, nlags=actual_lags)
-        except Exception:
-            acf_vals = np.array([1.0] + [0.0]*actual_lags)
-            pacf_vals = np.array([1.0] + [0.0]*actual_lags)
+    gamma0 = sample_autocovariance(clean_series, 0)
+    if gamma0 == 0:
+        acf_vals = np.zeros(actual_lags + 1)
+        acf_vals[0] = 1.0
+    else:
+        acf_vals = np.array([sample_autocovariance(clean_series, h) / gamma0 for h in range(actual_lags + 1)])
+        
+    # Durbin-Levinson algorithm for PACF
+    pacf_vals = np.zeros(actual_lags + 1)
+    pacf_vals[0] = 1.0
+    
+    if actual_lags > 0:
+        phi = np.zeros(actual_lags + 1)
+        phi[1] = acf_vals[1]
+        pacf_vals[1] = acf_vals[1]
+        v = 1.0 - acf_vals[1] ** 2
+        
+        for h in range(2, actual_lags + 1):
+            num = acf_vals[h] - np.sum(phi[1:h] * acf_vals[h - 1 : 0 : -1])
+            phi_hh = num / v if v > 1e-14 else 0.0
+            pacf_vals[h] = phi_hh
             
+            phi_old = phi.copy()
+            for j in range(1, h):
+                phi[j] = phi_old[j] - phi_hh * phi_old[h - j]
+            phi[h] = phi_hh
+            
+            v = v * (1.0 - phi_hh ** 2)
+            if v <= 0:
+                v = 1e-14
+                
     return acf_vals, pacf_vals
 
 def suggest_model_from_acf_pacf(acf_vals: np.ndarray, pacf_vals: np.ndarray, n: int) -> dict:
@@ -49,88 +69,93 @@ def suggest_model_from_acf_pacf(acf_vals: np.ndarray, pacf_vals: np.ndarray, n: 
         explanation.append("\nConclusion: Neither ACF nor PACF have significant lags. The series behaves like White Noise.")
         return {"p": 0, "q": 0, "explanation": "\n".join(explanation)}
         
+    # Cutoff detection helper with 1 stray lag tolerance
+    def get_cutoff_and_tails_off(sig_lags):
+        cutoff = None
+        valid_candidates = []
+        for k in sig_lags:
+            if k <= 3:
+                after_lags = [l for l in sig_lags if l > k]
+                if len(after_lags) <= 1:
+                    valid_candidates.append(k)
+        if valid_candidates:
+            cutoff = max(valid_candidates)
+        tails_off = (cutoff is None) and (len(sig_lags) >= 3)
+        return cutoff, tails_off
+        
+    acf_cutoff, acf_tails_off = get_cutoff_and_tails_off(sig_acf)
+    pacf_cutoff, pacf_tails_off = get_cutoff_and_tails_off(sig_pacf)
+    
+    explanation.append(f"- ACF Cutoff: {acf_cutoff} (Tails-off: {acf_tails_off})")
+    explanation.append(f"- PACF Cutoff: {pacf_cutoff} (Tails-off: {pacf_tails_off})")
+    
     p_suggest = 0
     q_suggest = 0
     
-    acf_max = max(sig_acf) if sig_acf else 0
-    pacf_max = max(sig_pacf) if sig_pacf else 0
-    
-    if acf_max > 0 and pacf_max > 0:
-        # Both have significant lags
-        if acf_max <= 3 and (pacf_max > acf_max + 1 or len(sig_pacf) > len(sig_acf)):
-            q_suggest = acf_max
+    if acf_cutoff is not None and pacf_cutoff is None:
+        q_suggest = acf_cutoff
+        p_suggest = 0
+        explanation.append(f"\nConclusion: ACF cuts off at lag {acf_cutoff} while PACF tails off (or does not cut off). Suggesting MA({acf_cutoff}).")
+    elif pacf_cutoff is not None and acf_cutoff is None:
+        p_suggest = pacf_cutoff
+        q_suggest = 0
+        explanation.append(f"\nConclusion: PACF cuts off at lag {pacf_cutoff} while ACF tails off (or does not cut off). Suggesting AR({pacf_cutoff}).")
+    elif acf_cutoff is not None and pacf_cutoff is not None:
+        if acf_cutoff < pacf_cutoff:
+            q_suggest = acf_cutoff
             p_suggest = 0
-            explanation.append(f"\nConclusion: ACF cuts off at lag {acf_max} while PACF tails off. This suggests a Moving Average MA({acf_max}) model.")
-        elif pacf_max <= 3 and (acf_max > pacf_max + 1 or len(sig_acf) > len(sig_pacf)):
-            p_suggest = pacf_max
+            explanation.append(f"\nConclusion: ACF cuts off earlier (at lag {acf_cutoff}) than PACF (at lag {pacf_cutoff}). Suggesting MA({acf_cutoff}).")
+        elif pacf_cutoff < acf_cutoff:
+            p_suggest = pacf_cutoff
             q_suggest = 0
-            explanation.append(f"\nConclusion: PACF cuts off at lag {pacf_max} while ACF tails off. This suggests an Autoregressive AR({pacf_max}) model.")
+            explanation.append(f"\nConclusion: PACF cuts off earlier (at lag {pacf_cutoff}) than ACF (at lag {acf_cutoff}). Suggesting AR({pacf_cutoff}).")
         else:
             p_suggest = 1
             q_suggest = 1
-            explanation.append("\nConclusion: Both ACF and PACF show significant values at multiple lags, indicating tailing off behavior. A mixed ARMA(1, 1) model is suggested.")
-    elif acf_max > 0:
-        q_suggest = min(acf_max, 3)
-        explanation.append(f"\nConclusion: Only ACF has significant lags, cutting off at lag {q_suggest}. Suggesting MA({q_suggest}).")
+            explanation.append(f"\nConclusion: Both ACF and PACF cut off at lag {acf_cutoff}. Suggesting mixed ARMA(1, 1).")
+    elif acf_tails_off and pacf_tails_off:
+        p_suggest = 1
+        q_suggest = 1
+        explanation.append("\nConclusion: Both ACF and PACF tail off. Suggesting mixed ARMA(1, 1).")
     else:
-        p_suggest = min(pacf_max, 3)
-        explanation.append(f"\nConclusion: Only PACF has significant lags, cutting off at lag {p_suggest}. Suggesting AR({p_suggest}).")
-        
+        # Fallback if neither clear pattern is found
+        acf_max = max(sig_acf) if sig_acf else 0
+        pacf_max = max(sig_pacf) if sig_pacf else 0
+        if acf_max > 0 and pacf_max > 0:
+            p_suggest = 1
+            q_suggest = 1
+            explanation.append("\nConclusion: Mixed significant lags detected. Suggesting ARMA(1, 1).")
+        elif acf_max > 0:
+            q_suggest = min(acf_max, 3)
+            explanation.append(f"\nConclusion: Significant lags present in ACF. Suggesting MA({q_suggest}).")
+        else:
+            p_suggest = min(pacf_max, 3)
+            explanation.append(f"\nConclusion: Significant lags present in PACF. Suggesting AR({p_suggest}).")
+            
     return {"p": p_suggest, "q": q_suggest, "explanation": "\n".join(explanation)}
-
-def suggest_model_from_spectrum(detected_cycles: list[dict], seasonal_period: int) -> dict:
-    explanation = []
-    explanation.append(f"Spectral Suggestion Analysis (Seasonal Period s={seasonal_period}):")
-    
-    significant_cycles = [c for c in detected_cycles if c.get("significant", False)]
-    explanation.append(f"- Total detected significant cycles: {len(significant_cycles)}")
-    for i, c in enumerate(significant_cycles[:5]):
-        explanation.append(f"  Cycle {i+1}: Period = {c['period']:.2f} samples (frequency = {c['frequency']:.4f})")
-        
-    if not significant_cycles:
-        explanation.append("\nConclusion: No significant cycles detected in the spectrum. Non-seasonal model suggested.")
-        return {"P": 0, "Q": 0, "s": seasonal_period, "explanation": "\n".join(explanation)}
-        
-    matched = False
-    for c in significant_cycles:
-        p = c["period"]
-        tolerance = 0.15 * seasonal_period
-        if abs(p - seasonal_period) <= tolerance:
-            matched = True
-            explanation.append(f"\nFound significant cycle with period {p:.2f} matching seasonal period {seasonal_period} (within 15% tolerance).")
-            break
-        elif seasonal_period > 1:
-            for h in [2, 3, 4]:
-                harmonic_p = seasonal_period / h
-                if abs(p - harmonic_p) <= 0.15 * harmonic_p:
-                    matched = True
-                    explanation.append(f"\nFound significant cycle with period {p:.2f} matching seasonal harmonic {harmonic_p:.2f} (within 15% tolerance).")
-                    break
-            if matched:
-                break
-                
-    if matched:
-        explanation.append(f"\nConclusion: Significant cyclical/seasonal component detected. A seasonal SARIMA model with P=1, Q=1, s={seasonal_period} is suggested.")
-        return {"P": 1, "Q": 1, "s": seasonal_period, "explanation": "\n".join(explanation)}
-    else:
-        explanation.append("\nConclusion: Significant cycles detected, but none match the seasonal period or its main harmonics. A non-seasonal model is suggested, though cyclical features could be modeled with AR components.")
-        return {"P": 0, "Q": 0, "s": seasonal_period, "explanation": "\n".join(explanation)}
 
 def fit_model(series: pd.Series, order: tuple[int, int, int], seasonal_order: tuple[int, int, int, int] | None):
     clean_series = series.dropna()
+    p, d, q = order
     is_seas = False
+    D = 0
     if seasonal_order is not None:
-        P, D, Q, s = seasonal_order
-        if s > 1 and (P > 0 or D > 0 or Q > 0):
+        P_s, D_s, Q_s, s_s = seasonal_order
+        if s_s > 1 and (P_s > 0 or D_s > 0 or Q_s > 0):
             is_seas = True
+            D = D_s
             
-    if is_seas:
-        model = SARIMAX(clean_series, order=order, seasonal_order=seasonal_order)
-        res = model.fit(disp=False)
-    else:
-        model = ARIMA(clean_series, order=order)
-        res = model.fit(method='innovations_mle')
-        
+    actual_seasonal_order = seasonal_order if is_seas else None
+    
+    model = SARIMAX(
+        clean_series,
+        order=order,
+        seasonal_order=actual_seasonal_order,
+        trend='n',
+        enforce_stationarity=True,
+        enforce_invertibility=True
+    )
+    res = model.fit(disp=False, method='lbfgs', maxiter=200)
     return res
 
 def grid_search(series: pd.Series, max_p: int, max_q: int, max_P: int, max_Q: int, s: int, d: int, D: int, progress_callback=None) -> pd.DataFrame:

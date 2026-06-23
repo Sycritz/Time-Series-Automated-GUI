@@ -26,7 +26,7 @@ def test_gui_validation_workflow_fail():
     window = MainWindow()
     
     # 1. Load dataset on Tab 1
-    csv_path = os.path.join(os.path.dirname(__file__), "datasets", "international-airline-passengers.csv")
+    csv_path = os.path.join(os.path.dirname(__file__), "..", "datasets", "international-airline-passengers.csv")
     tab1 = window.tabs[0]
     from axis1_preprocessing import load_csv
     tab1.df = load_csv(csv_path)
@@ -72,8 +72,8 @@ def test_gui_validation_workflow_fail():
     verdict_text_bad = tab5.verdict_browser.toPlainText()
     assert "MODEL IS INADEQUATE" in verdict_text_bad
     
-    # Verify Tab 6 remains disabled
-    assert window.tab_widget.isTabEnabled(5) is False
+    # Verify Tab 6 is enabled (exploratory forecasting is allowed with warning)
+    assert window.tab_widget.isTabEnabled(5) is True
     print("GUI Tab 5 FAIL Workflow tests passed.")
 
 def test_gui_validation_workflow_pass(monkeypatch):
@@ -90,7 +90,7 @@ def test_gui_validation_workflow_pass(monkeypatch):
     window = MainWindow()
     
     # 1. Load dataset on Tab 1
-    csv_path = os.path.join(os.path.dirname(__file__), "datasets", "international-airline-passengers.csv")
+    csv_path = os.path.join(os.path.dirname(__file__), "..", "datasets", "international-airline-passengers.csv")
     tab1 = window.tabs[0]
     from axis1_preprocessing import load_csv
     tab1.df = load_csv(csv_path)

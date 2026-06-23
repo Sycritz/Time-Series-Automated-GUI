@@ -1,6 +1,10 @@
 # Agent working files (not part of deliverable)
 plan.md
 project_spec.txt
+skills-lock.json
+
+# Agent configuration (local dev only)
+.agents/
 
 # Python
 __pycache__/
@@ -10,6 +14,10 @@ __pycache__/
 dist/
 build/
 *.egg
+
+# Testing
+.pytest_cache/
+*.log
 
 # Virtual environments
 .venv/
@@ -29,3 +37,6 @@ Thumbs.db
 
 # Superpowers working directory
 .superpowers/
+
+# Project reference PDF (not source code)
+Group_Project_Time_Series_Analysis.pdf

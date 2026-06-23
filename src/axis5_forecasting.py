@@ -241,6 +241,8 @@ def get_transformation_histories(original_series: pd.Series, transformations: li
 def back_transform(forecasts: dict, transformations: list[dict], original_series: pd.Series) -> dict:
     """
     Reads the transformations list in reverse and reverts them sequentially on all forecast arrays.
+    For log-transformed series, prediction intervals are back-transformed multiplicatively:
+    PI = X_original * exp(+- z * sigma_stationary)
     """
     if not transformations or original_series is None:
         return forecasts.copy()
@@ -248,28 +250,86 @@ def back_transform(forecasts: dict, transformations: list[dict], original_series
     histories = get_transformation_histories(original_series, transformations)
     transformed_forecasts = forecasts.copy()
     
-    keys_to_transform = ["point", "lower_50", "upper_50", "lower_80", "upper_80", "lower_95", "upper_95"]
+    # Check if any Box-Cox transformation was applied and if differencing was also applied
+    has_bc = any(t["type"] == "boxcox" and t.get("lambda") is not None for t in transformations)
+    has_diff = any(
+        (t["type"] == "diff" and t.get("d", 0) > 0) or
+        (t["type"] == "seasonal_diff" and t.get("D", 0) > 0)
+        for t in transformations
+    )
     
-    for key in keys_to_transform:
-        if key not in forecasts:
-            continue
-            
-        vals = np.array(forecasts[key], dtype=float)
-        
-        # Apply inverse transformations in reverse order
+    # We must have upper_95 and lower_95 to calculate the multiplicative intervals
+    use_multiplicative = has_bc and has_diff and "upper_95" in forecasts and "lower_95" in forecasts
+    
+    if use_multiplicative:
+        from scipy.stats import norm
+        # 1. Back-transform point forecasts normally
+        point_original = np.array(forecasts["point"], dtype=float)
         for k in reversed(range(len(transformations))):
             trans = transformations[k]
             prev_hist = histories[k]
-            
             if trans["type"] == "boxcox":
-                vals = undo_box_cox(vals, trans["lambda"])
+                point_original = undo_box_cox(point_original, trans["lambda"])
             elif trans["type"] == "diff":
-                vals = undo_diff(vals, prev_hist, trans["d"])
+                point_original = undo_diff(point_original, prev_hist, trans["d"])
             elif trans["type"] == "seasonal_diff":
-                vals = undo_seasonal_diff(vals, prev_hist, trans["D"], trans["s"])
+                point_original = undo_seasonal_diff(point_original, prev_hist, trans["D"], trans["s"])
                 
-        transformed_forecasts[key] = vals
+        transformed_forecasts["point"] = point_original
         
+        # 2. Extract sigma_stationary from 95% interval on stationary scale
+        z_95 = norm.ppf(0.975)
+        sigma_stationary = (forecasts["upper_95"] - forecasts["lower_95"]) / (2.0 * z_95)
+        
+        # 3. Calculate multiplicative prediction intervals on original scale
+        for level_str, z in [("50", norm.ppf(0.75)), ("80", norm.ppf(0.90)), ("95", norm.ppf(0.975))]:
+            lower_key = f"lower_{level_str}"
+            upper_key = f"upper_{level_str}"
+            if lower_key in forecasts and upper_key in forecasts:
+                lo_bt = point_original * np.exp(-z * sigma_stationary)
+                hi_bt = point_original * np.exp(z * sigma_stationary)
+                # Clip lower bounds to be non-negative
+                transformed_forecasts[lower_key] = np.maximum(lo_bt, 0.0)
+                transformed_forecasts[upper_key] = hi_bt
+                
+        # Also back-transform any other keys in forecasts that are not handled above
+        handled_keys = {"point", "lower_50", "upper_50", "lower_80", "upper_80", "lower_95", "upper_95"}
+        for key, val in forecasts.items():
+            if key not in handled_keys and key not in ["steps", "dates"]:
+                vals = np.array(val, dtype=float)
+                for k in reversed(range(len(transformations))):
+                    trans = transformations[k]
+                    prev_hist = histories[k]
+                    if trans["type"] == "boxcox":
+                        vals = undo_box_cox(vals, trans["lambda"])
+                    elif trans["type"] == "diff":
+                        vals = undo_diff(vals, prev_hist, trans["d"])
+                    elif trans["type"] == "seasonal_diff":
+                        vals = undo_seasonal_diff(vals, prev_hist, trans["D"], trans["s"])
+                transformed_forecasts[key] = vals
+    else:
+        # Standard additive back-transformations
+        keys_to_transform = ["point", "lower_50", "upper_50", "lower_80", "upper_80", "lower_95", "upper_95"]
+        for key in keys_to_transform:
+            if key not in forecasts:
+                continue
+                
+            vals = np.array(forecasts[key], dtype=float)
+            
+            # Apply inverse transformations in reverse order
+            for k in reversed(range(len(transformations))):
+                trans = transformations[k]
+                prev_hist = histories[k]
+                
+                if trans["type"] == "boxcox":
+                    vals = undo_box_cox(vals, trans["lambda"])
+                elif trans["type"] == "diff":
+                    vals = undo_diff(vals, prev_hist, trans["d"])
+                elif trans["type"] == "seasonal_diff":
+                    vals = undo_seasonal_diff(vals, prev_hist, trans["D"], trans["s"])
+                    
+            transformed_forecasts[key] = vals
+            
     return transformed_forecasts
 
 def generate_spectral_insight(state: AnalysisState) -> str:
