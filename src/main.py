@@ -421,9 +421,19 @@ class DataLoadTab(BaseTab):
             return
             
         try:
-            from axis1_preprocessing import handle_missing
+            from axis1_preprocessing import impute_series
             method = self.impute_combo.currentText()
-            imputed_series, pct_missing = handle_missing(self.raw_series, method)
+            
+            method_map = {
+                'Forward Fill': 'forward_fill',
+                'Linear Interpolation': 'linear',
+                'Mean Imputation': 'mean'
+            }
+            mapped_method = method_map.get(method, 'linear')
+            
+            imputed_vals, n_imputed = impute_series(self.raw_series.values, method=mapped_method)
+            imputed_series = pd.Series(imputed_vals, index=self.raw_series.index, name=self.raw_series.name)
+            pct_missing = (n_imputed / len(self.raw_series)) * 100.0 if len(self.raw_series) > 0 else 0.0
             
             # Update state
             self.main_window.state.original_series = imputed_series
@@ -505,6 +515,10 @@ class DataLoadTab(BaseTab):
                 f"ADF Statistic: {res['adf_stat']:.4f}\n"
                 f"p-value:       {res['p_value']:.6f}\n"
                 f"Verdict:       {res['verdict']} ({english_verdict})\n\n"
+                f"Lags Used:     {res.get('used_lag', 0)}\n"
+                f"Observations:  {res.get('nobs', 0)}\n"
+                f"Regression Equation:\n"
+                f"  {res.get('regression_eq', '')}\n\n"
                 f"Critical Values:\n"
                 f"{crit_str}\n"
             )
@@ -647,6 +661,10 @@ class TransformTab(BaseTab):
                     f"ADF Statistic: {res['adf_stat']:.4f}\n"
                     f"p-value:       {res['p_value']:.6f}\n"
                     f"Verdict:       {res['verdict']} ({english_verdict})\n\n"
+                    f"Lags Used:     {res.get('used_lag', 0)}\n"
+                    f"Observations:  {res.get('nobs', 0)}\n"
+                    f"Regression Equation:\n"
+                    f"  {res.get('regression_eq', '')}\n\n"
                     f"Critical Values:\n"
                     f"{crit_str}\n"
                 )

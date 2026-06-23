@@ -2,9 +2,13 @@ import numpy as np
 import pandas as pd
 import tempfile
 import os
+import pytest
 from axis1_preprocessing import (
-    load_csv, handle_missing, run_adf_test,
-    apply_box_cox, apply_differencing, compute_frequency_response
+    load_csv, run_adf_test,
+    apply_box_cox, apply_differencing, compute_frequency_response,
+    box_cox_transform, box_cox_inverse, box_cox_profile_loglik,
+    box_cox_auto, impute_series, rolling_mean, rolling_std,
+    sample_autocovariance
 )
 
 def test_load_csv():
@@ -25,41 +29,68 @@ def test_load_csv():
     print("load_csv passed.")
 
 def test_handle_missing():
-    print("Testing handle_missing...")
+    print("Testing handle_missing (via impute_series)...")
     # Series with missing values
     s = pd.Series([1.0, np.nan, 3.0, np.nan, 5.0])
     
     # 1. Forward Fill
-    res_ff, pct = handle_missing(s, 'Forward Fill')
+    res_ff, n_imp = impute_series(s.values, 'forward_fill')
+    pct = (n_imp / len(s)) * 100.0
     assert pct == 40.0
-    assert res_ff.isna().sum() == 0
+    assert np.isnan(res_ff).sum() == 0
     assert list(res_ff) == [1.0, 1.0, 3.0, 3.0, 5.0]
     
     # 2. Linear Interpolation
-    res_li, _ = handle_missing(s, 'Linear Interpolation')
-    assert res_li.isna().sum() == 0
+    res_li, _ = impute_series(s.values, 'linear')
+    assert np.isnan(res_li).sum() == 0
     assert list(res_li) == [1.0, 2.0, 3.0, 4.0, 5.0]
     
     # 3. Mean Imputation
-    res_mean, _ = handle_missing(s, 'Mean Imputation')
-    assert res_mean.isna().sum() == 0
+    res_mean, _ = impute_series(s.values, 'mean')
+    assert np.isnan(res_mean).sum() == 0
     assert list(res_mean) == [1.0, 3.0, 3.0, 3.0, 5.0]
     print("handle_missing passed.")
 
 def test_run_adf_test():
     print("Testing run_adf_test...")
+    from statsmodels.tsa.stattools import adfuller
+
     # 1. Stationary series (white noise)
     np.random.seed(42)
     stat_series = pd.Series(np.random.randn(100))
+    
+    # Calculate p_max manually for comparison
+    N = len(stat_series)
+    p_max = int(np.floor(12 * (N / 100.0) ** 0.25))
+    p_max = min(N // 2 - 2, p_max)
+    
     res = run_adf_test(stat_series)
-    assert 'adf_stat' in res
-    assert 'p_value' in res
-    assert 'critical_values' in res
+    res_sm = adfuller(stat_series.dropna(), maxlag=p_max, autolag='AIC')
+    
+    # Verify values match statsmodels
+    np.testing.assert_allclose(res['adf_stat'], res_sm[0], rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(res['p_value'], res_sm[1], rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(res['critical_values']['1%'], res_sm[4]['1%'], rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(res['critical_values']['5%'], res_sm[4]['5%'], rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(res['critical_values']['10%'], res_sm[4]['10%'], rtol=1e-7, atol=1e-7)
+    
+    nobs_sm = res_sm[3]
+    used_lag_sm = res_sm[2]
+    assert nobs_sm == N - 1 - used_lag_sm
     assert res['verdict'] == 'Stationary'
     
     # 2. Non-stationary series (random walk)
+    np.random.seed(42)
     non_stat_series = pd.Series(np.random.randn(100).cumsum())
+    
     res_ns = run_adf_test(non_stat_series)
+    res_ns_sm = adfuller(non_stat_series.dropna(), maxlag=p_max, autolag='AIC')
+    
+    np.testing.assert_allclose(res_ns['adf_stat'], res_ns_sm[0], rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(res_ns['p_value'], res_ns_sm[1], rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(res_ns['critical_values']['1%'], res_ns_sm[4]['1%'], rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(res_ns['critical_values']['5%'], res_ns_sm[4]['5%'], rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(res_ns['critical_values']['10%'], res_ns_sm[4]['10%'], rtol=1e-7, atol=1e-7)
     assert res_ns['verdict'] == 'Non-Stationary'
     print("run_adf_test passed.")
 
@@ -114,8 +145,6 @@ def test_compute_frequency_response():
 
 def test_rolling_and_autocovariance():
     print("Testing custom rolling mean, std and autocovariance...")
-    import pytest
-    from axis1_preprocessing import rolling_mean, rolling_std, sample_autocovariance
     x = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
     
     # Test rolling_mean
@@ -167,6 +196,77 @@ def test_rolling_and_autocovariance():
     
     print("Rolling and autocovariance tests passed.")
 
+def test_box_cox_detailed():
+    print("Testing Box-Cox transformations and grid search...")
+    x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    
+    # 1. Transform
+    y_log = box_cox_transform(x, 0.0)
+    np.testing.assert_allclose(y_log, np.log(x))
+    
+    y_power = box_cox_transform(x, 2.0)
+    np.testing.assert_allclose(y_power, (x**2 - 1.0) / 2.0)
+    
+    with pytest.raises(ValueError):
+        box_cox_transform(np.array([1.0, 0.0, -1.0]), 1.0)
+        
+    # 2. Inverse
+    np.testing.assert_allclose(box_cox_inverse(y_log, 0.0), x)
+    np.testing.assert_allclose(box_cox_inverse(y_power, 2.0), x)
+    
+    # 3. Profile Log-Likelihood
+    # Non-positive values raise ValueError
+    with pytest.raises(ValueError):
+        box_cox_profile_loglik(np.array([1.0, -1.0]), 1.0)
+    # Correct calculation check
+    ll_0 = box_cox_profile_loglik(x, 0.0)
+    ll_2 = box_cox_profile_loglik(x, 2.0)
+    assert isinstance(ll_0, float)
+    assert isinstance(ll_2, float)
+    
+    # 4. Auto-optimize
+    best_lam = box_cox_auto(x)
+    assert isinstance(best_lam, float)
+    assert -2.0 <= best_lam <= 2.0
+    
+    print("Box-Cox detailed tests passed.")
+
+def test_impute_series_detailed():
+    print("Testing impute_series...")
+    x = np.array([1.0, np.nan, 3.0, np.nan, 5.0])
+    
+    # 1. Linear interpolation
+    x_linear, n_imp = impute_series(x, "linear")
+    assert n_imp == 2
+    np.testing.assert_allclose(x_linear, [1.0, 2.0, 3.0, 4.0, 5.0])
+    
+    # 2. Forward fill
+    x_ff, n_imp_ff = impute_series(x, "forward_fill")
+    assert n_imp_ff == 2
+    np.testing.assert_allclose(x_ff, [1.0, 1.0, 3.0, 3.0, 5.0])
+    
+    # 3. Mean Imputation
+    x_mean, n_imp_mean = impute_series(x, "mean")
+    assert n_imp_mean == 2
+    np.testing.assert_allclose(x_mean, [1.0, 3.0, 3.0, 3.0, 5.0])
+    
+    # Test boundary case where first element is NaN for forward fill
+    x_nan_first = np.array([np.nan, 2.0, 3.0])
+    x_nan_first_ff, _ = impute_series(x_nan_first, "forward_fill")
+    np.testing.assert_allclose(x_nan_first_ff, [2.0, 2.0, 3.0])
+    
+    # Test when all elements are NaN
+    x_all_nan = np.array([np.nan, np.nan])
+    x_all_nan_li, _ = impute_series(x_all_nan, "linear")
+    np.testing.assert_allclose(x_all_nan_li, [0.0, 0.0])
+    
+    x_all_nan_ff, _ = impute_series(x_all_nan, "forward_fill")
+    np.testing.assert_allclose(x_all_nan_ff, [0.0, 0.0])
+    
+    x_all_nan_mean, _ = impute_series(x_all_nan, "mean")
+    np.testing.assert_allclose(x_all_nan_mean, [0.0, 0.0])
+
+    print("impute_series detailed tests passed.")
 
 if __name__ == "__main__":
     test_load_csv()
@@ -176,5 +276,6 @@ if __name__ == "__main__":
     test_apply_differencing()
     test_compute_frequency_response()
     test_rolling_and_autocovariance()
+    test_box_cox_detailed()
+    test_impute_series_detailed()
     print("All preprocessing tests passed successfully!")
-
