@@ -468,16 +468,17 @@ class DataLoadTab(BaseTab):
             
         # Subplot 1: Series Values & Rolling Mean
         ax1.plot(series.index, series.values, color='#1F2937', label='Series Values', alpha=0.8)
-        rolling_mean = series.rolling(window=window_size, min_periods=1).mean()
-        ax1.plot(series.index, rolling_mean, color='#2563EB', label=f'Rolling Mean ({window_size})')
+        from axis1_preprocessing import rolling_mean, rolling_std
+        rolling_mean_vals = rolling_mean(series, window_size)
+        ax1.plot(series.index, rolling_mean_vals, color='#2563EB', label=f'Rolling Mean ({window_size})')
         ax1.set_ylabel('Values')
         ax1.set_xlabel(series.index.name if series.index.name else 'Time')
         ax1.legend(loc='best')
         ax1.set_title("Rolling Mean")
         
         # Subplot 2: Rolling Std
-        rolling_std = series.rolling(window=window_size, min_periods=1).std()
-        ax2.plot(series.index, rolling_std, color='#16A34A', label=f'Rolling Std ({window_size})', linestyle='--')
+        rolling_std_vals = rolling_std(series, window_size)
+        ax2.plot(series.index, rolling_std_vals, color='#16A34A', label=f'Rolling Std ({window_size})', linestyle='--')
         ax2.set_ylabel('Standard Deviation')
         ax2.set_xlabel(series.index.name if series.index.name else 'Time')
         ax2.legend(loc='best')
@@ -688,15 +689,16 @@ class TransformTab(BaseTab):
             return
             
         ax1.plot(clean_series.index, clean_series.values, color='#1F2937', label='Transformed Series', alpha=0.8)
-        rolling_mean = clean_series.rolling(window=window_size, min_periods=1).mean()
-        ax1.plot(clean_series.index, rolling_mean, color='#2563EB', label=f'Rolling Mean ({window_size})')
+        from axis1_preprocessing import rolling_mean, rolling_std
+        rolling_mean_vals = rolling_mean(clean_series, window_size)
+        ax1.plot(clean_series.index, rolling_mean_vals, color='#2563EB', label=f'Rolling Mean ({window_size})')
         ax1.set_ylabel('Transformed Values')
         ax1.set_xlabel(clean_series.index.name if clean_series.index.name else 'Time')
         ax1.legend(loc='best')
         ax1.set_title("Rolling Mean")
         
-        rolling_std = clean_series.rolling(window=window_size, min_periods=1).std()
-        ax2.plot(clean_series.index, rolling_std, color='#16A34A', label=f'Rolling Std ({window_size})', linestyle='--')
+        rolling_std_vals = rolling_std(clean_series, window_size)
+        ax2.plot(clean_series.index, rolling_std_vals, color='#16A34A', label=f'Rolling Std ({window_size})', linestyle='--')
         ax2.set_ylabel('Standard Deviation')
         ax2.set_xlabel(clean_series.index.name if clean_series.index.name else 'Time')
         ax2.legend(loc='best')
