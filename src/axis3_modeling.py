@@ -2,35 +2,56 @@ import numpy as np
 import pandas as pd
 import warnings
 from PySide6.QtCore import QThread, Signal
-from statsmodels.tsa.stattools import acf, pacf
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 def compute_acf_pacf(series: pd.Series, nlags: int) -> tuple[np.ndarray, np.ndarray]:
+    from axis1_preprocessing import sample_autocovariance
+    
     clean_series = series.dropna()
     n = len(clean_series)
     if n == 0:
         return np.array([1.0]), np.array([1.0])
     
-    # Cap nlags based on statsmodels constraints (nlags < n // 2)
-    actual_lags = min(nlags, n // 2 - 1)
+    # Cap nlags based on statsmodels constraints (nlags <= n // 2)
+    actual_lags = min(nlags, n // 2)
     if actual_lags < 1:
         actual_lags = min(1, n - 1)
     if actual_lags < 1:
         return np.array([1.0]), np.array([1.0])
         
-    try:
-        acf_vals = acf(clean_series, nlags=actual_lags)
-        pacf_vals = pacf(clean_series, nlags=actual_lags, method='ywm')
-    except Exception:
-        try:
-            acf_vals = acf(clean_series, nlags=actual_lags)
-            pacf_vals = pacf(clean_series, nlags=actual_lags)
-        except Exception:
-            acf_vals = np.array([1.0] + [0.0]*actual_lags)
-            pacf_vals = np.array([1.0] + [0.0]*actual_lags)
+    gamma0 = sample_autocovariance(clean_series, 0)
+    if gamma0 == 0:
+        acf_vals = np.zeros(actual_lags + 1)
+        acf_vals[0] = 1.0
+    else:
+        acf_vals = np.array([sample_autocovariance(clean_series, h) / gamma0 for h in range(actual_lags + 1)])
+        
+    # Durbin-Levinson algorithm for PACF
+    pacf_vals = np.zeros(actual_lags + 1)
+    pacf_vals[0] = 1.0
+    
+    if actual_lags > 0:
+        phi = np.zeros(actual_lags + 1)
+        phi[1] = acf_vals[1]
+        pacf_vals[1] = acf_vals[1]
+        v = 1.0 - acf_vals[1] ** 2
+        
+        for h in range(2, actual_lags + 1):
+            num = acf_vals[h] - np.sum(phi[1:h] * acf_vals[h - 1 : 0 : -1])
+            phi_hh = num / v if v > 1e-14 else 0.0
+            pacf_vals[h] = phi_hh
             
+            phi_old = phi.copy()
+            for j in range(1, h):
+                phi[j] = phi_old[j] - phi_hh * phi_old[h - j]
+            phi[h] = phi_hh
+            
+            v = v * (1.0 - phi_hh ** 2)
+            if v <= 0:
+                v = 1e-14
+                
     return acf_vals, pacf_vals
 
 def suggest_model_from_acf_pacf(acf_vals: np.ndarray, pacf_vals: np.ndarray, n: int) -> dict:
