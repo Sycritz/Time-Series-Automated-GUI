@@ -1,5 +1,7 @@
 import sys
 import os
+from dotenv import load_dotenv
+load_dotenv()
 os.environ["QT_API"] = "pyside6"
 import pandas as pd
 import numpy as np
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
 from state import AnalysisState
 from widgets import StatusIndicator, PlotWidget
+from chat_assistant import ChatPanel
 
 STYLESHEET = """
 QMainWindow {
@@ -2134,7 +2137,22 @@ class MainWindow(QMainWindow):
         
         # Setup main tab widget
         self.tab_widget = QTabWidget(self)
-        self.setCentralWidget(self.tab_widget)
+        
+        # Setup Chat Panel and Splitter layout
+        self.chat_panel = ChatPanel(state=self.state, main_window=self)
+        self.chat_panel.hide()
+        
+        self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.splitter.addWidget(self.tab_widget)
+        self.splitter.addWidget(self.chat_panel)
+        self.setCentralWidget(self.splitter)
+        
+        # Configure Chat Toggle Button
+        self.chat_toggle_btn = QPushButton("💬 Chat Assistant", self.tab_widget)
+        self.chat_toggle_btn.setCheckable(True)
+        self.chat_toggle_btn.setChecked(False)
+        self.chat_toggle_btn.clicked.connect(self.toggle_chat_panel)
+        self.tab_widget.setCornerWidget(self.chat_toggle_btn)
         
         # Add tabs
         self.tabs = [
@@ -2240,6 +2258,13 @@ class MainWindow(QMainWindow):
         # Update tab 3 parametric overlay if model is fitted
         if hasattr(self, 'tabs') and len(self.tabs) > 2:
             self.tabs[2].update_parametric_spectrum_overlay()
+
+    def toggle_chat_panel(self, checked):
+        if checked:
+            self.chat_panel.show()
+            self.splitter.setSizes([850, 350])
+        else:
+            self.chat_panel.hide()
 
     def closeEvent(self, event):
         try:
