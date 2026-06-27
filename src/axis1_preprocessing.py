@@ -1,17 +1,19 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
+
 
 def load_csv(path: str) -> pd.DataFrame:
     """
     Loads a CSV or TXT file using pandas. Handles clean parsing.
     """
     try:
-        df = pd.read_csv(path, sep=None, engine='python')
+        df = pd.read_csv(path, sep=None, engine="python")
         return df
     except Exception as e:
         raise ValueError(f"Failed to parse CSV/TXT file: {e}")
 
-def impute_series(x: np.ndarray, method: str = 'linear') -> tuple[np.ndarray, int]:
+
+def impute_series(x: np.ndarray, method: str = "linear") -> tuple[np.ndarray, int]:
     """
     Impute missing values (NaN) in series x.
     Methods: 'linear' (interpolation), 'forward_fill', 'mean'.
@@ -22,7 +24,7 @@ def impute_series(x: np.ndarray, method: str = 'linear') -> tuple[np.ndarray, in
         method_norm = "linear"
     elif method_norm == "mean_imputation":
         method_norm = "mean"
-    
+
     x = x.astype(float)
     mask = np.isnan(x)
     n_imputed = int(np.sum(mask))
@@ -57,6 +59,7 @@ def impute_series(x: np.ndarray, method: str = 'linear') -> tuple[np.ndarray, in
 
     return x_out, n_imputed
 
+
 def run_adf_test(series: pd.Series) -> dict:
     """
     Runs the Augmented Dickey-Fuller test using manual OLS regression from scratch.
@@ -64,51 +67,59 @@ def run_adf_test(series: pd.Series) -> dict:
     clean_series = series.dropna()
     N = len(clean_series)
     if N < 10:
-        raise ValueError("Insufficient data points (at least 10 required) to run ADF test.")
-    
+        raise ValueError(
+            "Insufficient data points (at least 10 required) to run ADF test."
+        )
+
     try:
         x = clean_series.values.astype(float)
         if x.max() == x.min():
             raise ValueError("Invalid input, x is constant")
-        
+
         # 1. Determine maxlag (Schwert 1989 rule)
         p_max = int(np.floor(12 * (N / 100.0) ** 0.25))
         # Limit maxlag as in statsmodels: min(nobs // 2 - ntrend - 1, maxlag)
         # For regression = 'c', ntrend = 1
         p_max = min(N // 2 - 2, p_max)
         if p_max < 0:
-            raise ValueError("sample size is too short to use selected regression component")
-        
+            raise ValueError(
+                "sample size is too short to use selected regression component"
+            )
+
         xdiff = np.diff(x)
-        
+
         # 2. Lag selection via AIC minimization on fixed sample size (restricted by maxlag)
         nobs_select = N - 1 - p_max
         yd = xdiff[p_max:]
-        
+
         aics = []
         for p in range(p_max + 1):
             cols = [np.ones((nobs_select, 1)), x[p_max : N - 1, None]]
             for j in range(1, p + 1):
                 cols.append(xdiff[p_max - j : N - 1 - j, None])
             X_p = np.hstack(cols)
-            
+
             # Solve OLS via least squares
             beta, _, _, _ = np.linalg.lstsq(X_p, yd, rcond=None)
             residuals = yd - X_p @ beta
-            RSS = np.sum(residuals ** 2)
-            
+            RSS = np.sum(residuals**2)
+
             # Calculate log-likelihood and AIC
-            llf = -nobs_select / 2.0 * (np.log(2.0 * np.pi) + np.log(RSS / nobs_select) + 1.0)
+            llf = (
+                -nobs_select
+                / 2.0
+                * (np.log(2.0 * np.pi) + np.log(RSS / nobs_select) + 1.0)
+            )
             k = X_p.shape[1]
             aic = -2.0 * llf + 2.0 * k
             aics.append((aic, p))
-            
+
         best_aic, best_p = min(aics)
-        
+
         # 3. Rerun OLS on full available sample size for the selected best_p
         nobs_final = N - 1 - best_p
         yd_final = xdiff[best_p:]
-        
+
         # Regressors: statsmodels has prepend=False for final regression,
         # so level variable x_{t-1} is column 0, lagged differences are cols 1..best_p,
         # and constant is appended as the last column.
@@ -117,22 +128,22 @@ def run_adf_test(series: pd.Series) -> dict:
             cols_final.append(xdiff[best_p - j : N - 1 - j, None])
         cols_final.append(np.ones((nobs_final, 1)))
         X_final = np.hstack(cols_final)
-        
+
         beta_final, _, _, _ = np.linalg.lstsq(X_final, yd_final, rcond=None)
         residuals_final = yd_final - X_final @ beta_final
-        RSS_final = np.sum(residuals_final ** 2)
-        
+        RSS_final = np.sum(residuals_final**2)
+
         df_final = nobs_final - X_final.shape[1]
         s_final2 = RSS_final / df_final
-        
+
         # Standard errors of coefficients
         X_T_X_inv = np.linalg.inv(X_final.T @ X_final)
         var_beta = s_final2 * X_T_X_inv
         se_beta = np.sqrt(np.diag(var_beta))
-        
+
         # ADF statistic is the t-statistic of the lagged level (column 0)
         tau = beta_final[0] / se_beta[0]
-        
+
         # MacKinnon (1994) critical values (with constant, no trend)
         critical_values = {"1%": -3.43, "5%": -2.86, "10%": -2.57}
 
@@ -152,19 +163,22 @@ def run_adf_test(series: pd.Series) -> dict:
             else:
                 p_value = 0.10 + (tau - (-2.57)) / (0.0 - (-2.57)) * (0.99 - 0.10)
 
-        verdict = 'Stationary' if p_value < 0.05 else 'Non-Stationary'
-        
+        verdict = "Stationary" if p_value < 0.05 else "Non-Stationary"
+
         return {
-            'adf_stat': float(tau),
-            'p_value': p_value,
-            'critical_values': critical_values,
-            'verdict': verdict,
-            'used_lag': best_p,
-            'nobs': nobs_final,
-            'regression_eq': f"ΔX_t = α + β·X_{{t-1}}" + (f" + Σ γ_j·ΔX_{{t-j}} (j=1..{best_p})" if best_p > 0 else "") + " + ε_t"
+            "adf_stat": float(tau),
+            "p_value": p_value,
+            "critical_values": critical_values,
+            "verdict": verdict,
+            "used_lag": best_p,
+            "nobs": nobs_final,
+            "regression_eq": f"ΔX_t = α + β·X_{{t-1}}"
+            + (f" + Σ γ_j·ΔX_{{t-j}} (j=1..{best_p})" if best_p > 0 else "")
+            + " + ε_t",
         }
     except Exception as e:
         raise ValueError(f"ADF test failed: {e}")
+
 
 def box_cox_transform(x: np.ndarray, lam: float) -> np.ndarray:
     """
@@ -179,6 +193,7 @@ def box_cox_transform(x: np.ndarray, lam: float) -> np.ndarray:
         return np.log(x)
     return (x**lam - 1.0) / lam
 
+
 def box_cox_inverse(y: np.ndarray, lam: float) -> np.ndarray:
     """
     Inverse Box-Cox transformation (for back-transform in Axis 5).
@@ -188,6 +203,7 @@ def box_cox_inverse(y: np.ndarray, lam: float) -> np.ndarray:
     if abs(lam) < 1e-10:
         return np.exp(y)
     return (lam * y + 1.0) ** (1.0 / lam)
+
 
 def box_cox_profile_loglik(x: np.ndarray, lam: float) -> float:
     """
@@ -208,6 +224,7 @@ def box_cox_profile_loglik(x: np.ndarray, lam: float) -> float:
     log_lik = -(n / 2.0) * np.log(sigma2_hat) + (lam - 1.0) * np.sum(np.log(x))
     return float(log_lik)
 
+
 def box_cox_auto(x: np.ndarray, lam_grid: np.ndarray | None = None) -> float:
     """
     Find lambda that maximizes the profile log-likelihood.
@@ -218,6 +235,7 @@ def box_cox_auto(x: np.ndarray, lam_grid: np.ndarray | None = None) -> float:
     logliks = np.array([box_cox_profile_loglik(x, lam) for lam in lam_grid])
     return float(lam_grid[np.argmax(logliks)])
 
+
 def apply_box_cox(series: pd.Series, lam: float | None) -> tuple[pd.Series, float]:
     """
     Applies Box-Cox transformation. If lam is None, automatically optimizes it.
@@ -225,18 +243,23 @@ def apply_box_cox(series: pd.Series, lam: float | None) -> tuple[pd.Series, floa
     non_nan_mask = series.notna()
     valid_values = series[non_nan_mask].values
     if (valid_values <= 0).any():
-        raise ValueError("Box-Cox transformation requires strictly positive data. Found non-positive values.")
-    
+        raise ValueError(
+            "Box-Cox transformation requires strictly positive data. Found non-positive values."
+        )
+
     if lam is None:
         opt_lam = box_cox_auto(valid_values)
     else:
         opt_lam = float(lam)
-        
+
     transformed_valid = box_cox_transform(valid_values, opt_lam)
     transformed_values = np.full(series.shape, np.nan)
     transformed_values[non_nan_mask] = transformed_valid
-    transformed_series = pd.Series(transformed_values, index=series.index, name=series.name)
+    transformed_series = pd.Series(
+        transformed_values, index=series.index, name=series.name
+    )
     return transformed_series, opt_lam
+
 
 def apply_differencing(series: pd.Series, d: int, D: int, s: int) -> pd.Series:
     """
@@ -246,7 +269,7 @@ def apply_differencing(series: pd.Series, d: int, D: int, s: int) -> pd.Series:
         raise ValueError("Differencing orders d and D must be non-negative.")
     if D > 0 and s <= 0:
         raise ValueError("Seasonal period s must be greater than 0 when D > 0.")
-    
+
     arr = series.values.astype(float).copy()
     for _ in range(d):
         new_arr = np.full_like(arr, np.nan)
@@ -258,6 +281,7 @@ def apply_differencing(series: pd.Series, d: int, D: int, s: int) -> pd.Series:
             new_arr[s:] = arr[s:] - arr[:-s]
         arr = new_arr
     return pd.Series(arr, index=series.index, name=series.name)
+
 
 def rolling_mean(x: pd.Series | np.ndarray, window: int) -> pd.Series | np.ndarray:
     """
@@ -276,6 +300,7 @@ def rolling_mean(x: pd.Series | np.ndarray, window: int) -> pd.Series | np.ndarr
         return pd.Series(result, index=x.index, name=x.name)
     return result
 
+
 def rolling_std(x: pd.Series | np.ndarray, window: int) -> pd.Series | np.ndarray:
     """
     Compute rolling standard deviation manually (ddof=1).
@@ -293,6 +318,7 @@ def rolling_std(x: pd.Series | np.ndarray, window: int) -> pd.Series | np.ndarra
     if is_series:
         return pd.Series(result, index=x.index, name=x.name)
     return result
+
 
 def sample_autocovariance(x: pd.Series | np.ndarray, h: int) -> float:
     """

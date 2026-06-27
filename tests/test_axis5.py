@@ -1,16 +1,13 @@
 import numpy as np
 import pandas as pd
 import pytest
-from state import AnalysisState
-from axis5_forecasting import (
-    compute_psi_weights,
-    undo_box_cox,
-    undo_diff,
-    undo_seasonal_diff,
-    back_transform,
-    generate_forecasts
-)
 from statsmodels.tsa.arima.model import ARIMA
+
+from axis5_forecasting import (back_transform, compute_psi_weights,
+                               generate_forecasts, undo_box_cox, undo_diff,
+                               undo_seasonal_diff)
+from state import AnalysisState
+
 
 def test_compute_psi_weights():
     # AR(1) with phi = 0.5
@@ -19,14 +16,14 @@ def test_compute_psi_weights():
     ma = []
     psi = compute_psi_weights(ar, ma, 4)
     np.testing.assert_allclose(psi, [1.0, 0.5, 0.25, 0.125])
-    
+
     # MA(1) with theta = 0.4
     # psi_0 = 1.0, psi_1 = 0.4, psi_2 = 0.0, psi_3 = 0.0
     ar = []
     ma = [0.4]
     psi = compute_psi_weights(ar, ma, 4)
     np.testing.assert_allclose(psi, [1.0, 0.4, 0.0, 0.0])
-    
+
     # ARMA(1, 1) with phi = 0.5, theta = 0.4
     # psi_0 = 1.0
     # psi_1 = 0.4 + 0.5 * 1.0 = 0.9
@@ -37,16 +34,18 @@ def test_compute_psi_weights():
     psi = compute_psi_weights(ar, ma, 4)
     np.testing.assert_allclose(psi, [1.0, 0.9, 0.45, 0.225])
 
+
 def test_undo_box_cox():
     # Lambda = 0 (exp)
     val = np.array([0.0, 1.0, 2.0])
     res = undo_box_cox(val, 0.0)
     np.testing.assert_allclose(res, [1.0, np.exp(1.0), np.exp(2.0)])
-    
+
     # Lambda = 2.0
     # y = (x^2 - 1)/2 => 2y + 1 = x^2 => x = sqrt(2y + 1)
     res_2 = undo_box_cox(val, 2.0)
     np.testing.assert_allclose(res_2, [1.0, np.sqrt(3.0), np.sqrt(5.0)])
+
 
 def test_undo_diff():
     # Ordinary differencing order 1
@@ -56,7 +55,7 @@ def test_undo_diff():
     prev = pd.Series([10.0, 11.0, 12.0])
     reconstructed = undo_diff(forecasts, prev, 1)
     np.testing.assert_allclose(reconstructed, [13.0, 15.0, 18.0])
-    
+
     # Order 2 differencing
     # Let X = [1, 4, 9, 16] => diff1 = [3, 5, 7] => diff2 = [2, 2]
     # If forecast is [2, 2], and prev = X
@@ -65,6 +64,7 @@ def test_undo_diff():
     prev_2 = pd.Series([1.0, 4.0, 9.0, 16.0])
     reconstructed_2 = undo_diff(forecasts_2, prev_2, 2)
     np.testing.assert_allclose(reconstructed_2, [25.0, 36.0])
+
 
 def test_undo_seasonal_diff():
     # Seasonal differencing order 1, s = 4
@@ -81,6 +81,7 @@ def test_undo_seasonal_diff():
     reconstructed = undo_seasonal_diff(forecasts, prev, 1, 4)
     np.testing.assert_allclose(reconstructed, [6.0, 7.0, 8.0, 9.0, 8.0, 9.0])
 
+
 def test_back_transform():
     # Test a combination chain: Box-Cox (lam=0) then diff(d=1)
     # Original series: [e^1, e^2, e^3] = [2.718, 7.389, 20.086]
@@ -91,26 +92,24 @@ def test_back_transform():
     # 1. Undo diff: [3.0 + 1 = 4.0, 4.0 + 1 = 5.0]
     # 2. Undo Box-Cox: [e^4, e^5]
     orig = pd.Series([np.exp(1.0), np.exp(2.0), np.exp(3.0)])
-    transformations = [
-        {"type": "boxcox", "lambda": 0.0},
-        {"type": "diff", "d": 1}
-    ]
+    transformations = [{"type": "boxcox", "lambda": 0.0}, {"type": "diff", "d": 1}]
     forecasts = {"point": np.array([1.0, 1.0])}
     res = back_transform(forecasts, transformations, orig)
     np.testing.assert_allclose(res["point"], [np.exp(4.0), np.exp(5.0)])
+
 
 def test_generate_forecasts_integration():
     np.random.seed(42)
     y = pd.Series(np.random.randn(100))
     model = ARIMA(y, order=(1, 0, 1))
-    res = model.fit(method='innovations_mle')
-    
+    res = model.fit(method="innovations_mle")
+
     state = AnalysisState()
     state.original_series = y
     state.stationary_series = y
-    
+
     forecasts = generate_forecasts(res, 5, state)
-    
+
     assert "point" in forecasts
     assert "lower_95" in forecasts
     assert len(forecasts["point"]) == 5
@@ -118,13 +117,11 @@ def test_generate_forecasts_integration():
     assert (forecasts["lower_95"] < forecasts["point"]).all()
     assert (forecasts["upper_95"] > forecasts["point"]).all()
 
+
 def test_back_transform_multiplicative():
     # Original series on exponential scale
     orig = pd.Series([np.exp(1.0), np.exp(2.0), np.exp(3.0)])
-    transformations = [
-        {"type": "boxcox", "lambda": 0.0},
-        {"type": "diff", "d": 1}
-    ]
+    transformations = [{"type": "boxcox", "lambda": 0.0}, {"type": "diff", "d": 1}]
     # Forecasts on stationary scale
     # point = 1.0. If z_95 * sigma_stationary = 0.5, then:
     # lower_95 = 1.0 - 0.5 = 0.5
@@ -136,9 +133,9 @@ def test_back_transform_multiplicative():
         "lower_80": np.array([0.7]),
         "upper_80": np.array([1.3]),
         "lower_95": np.array([0.5]),
-        "upper_95": np.array([1.5])
+        "upper_95": np.array([1.5]),
     }
-    
+
     # Back-transform should:
     # 1. Back-transform point forecast normally:
     #    diff undo: 3.0 (from log(orig[-1])) + 1.0 (forecast point) = 4.0
@@ -148,21 +145,21 @@ def test_back_transform_multiplicative():
     # 3. Apply multiplicative scaling:
     #    lower_95 = exp(4.0) * exp(-0.5)
     #    upper_95 = exp(4.0) * exp(+0.5)
-    
+
     res = back_transform(forecasts, transformations, orig)
-    
+
     expected_point = np.exp(4.0)
     expected_lower_95 = np.exp(4.0) * np.exp(-0.5)
     expected_upper_95 = np.exp(4.0) * np.exp(0.5)
-    
+
     np.testing.assert_allclose(res["point"], [expected_point])
     np.testing.assert_allclose(res["lower_95"], [expected_lower_95])
     np.testing.assert_allclose(res["upper_95"], [expected_upper_95])
-    
+
     # Check that non-log series (e.g. Box-Cox with lambda = 1.0) now also use multiplicative prediction intervals back-transformation
     transformations_non_log = [
         {"type": "boxcox", "lambda": 1.0},
-        {"type": "diff", "d": 1}
+        {"type": "diff", "d": 1},
     ]
     res_non_log = back_transform(forecasts, transformations_non_log, orig)
     expected_point_non_log = np.exp(3.0) + 1.0
@@ -171,4 +168,3 @@ def test_back_transform_multiplicative():
     np.testing.assert_allclose(res_non_log["point"], [expected_point_non_log])
     np.testing.assert_allclose(res_non_log["lower_95"], [expected_lower_95_non_log])
     np.testing.assert_allclose(res_non_log["upper_95"], [expected_upper_95_non_log])
-

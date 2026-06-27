@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
-import pandas as pd
+
 import numpy as np
+import pandas as pd
+
 
 @dataclass
 class AnalysisState:
@@ -23,8 +25,8 @@ class AnalysisState:
 
     # Tab 4 outputs
     _fitted_model: object | None = None
-    model_order: tuple | None = None    # (p, d, q) or (p, d, q, P, D, Q, s)
-    model_params: dict | None = None    # {"ar": [...], "ma": [...], "sigma2": float}
+    model_order: tuple | None = None  # (p, d, q) or (p, d, q, P, D, Q, s)
+    model_params: dict | None = None  # {"ar": [...], "ma": [...], "sigma2": float}
     residuals: np.ndarray | None = None
     is_seasonal: bool = False
     preview_model_params: dict | None = None
